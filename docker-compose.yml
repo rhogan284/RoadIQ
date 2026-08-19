@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15
+
+  postgres:
+    # PostGIS >= 3.4: ST_LineSubstring only supports geography from 3.4.0.
+    # Pinned, not floating (R-R1). The official postgis/postgis images have no
+    # arm64 manifest, so this community multi-arch build is used instead —
+    # Joseph's CI (amd64) needs this same image too.
+    image: imresamu/postgis:16-3.5-alpine
+    environment:
+      POSTGRES_USER: edgecv
+      POSTGRES_PASSWORD: edgecv
+      POSTGRES_DB: edgecv
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edgecv"]
+      interval: 2s
+      retries: 15

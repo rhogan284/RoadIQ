@@ -1,0 +1,179 @@
+-- R-R1: geography on segments and defect_instances. The image pin in
+-- docker-compose.yml is the other half of this requirement.
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     text PRIMARY KEY,
+    applied_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS detectors (
+    detector_id  bigserial PRIMARY KEY,
+    name         text NOT NULL,
+    version      text NOT NULL,
+    params       jsonb NOT NULL DEFAULT '{}',
+    params_hash  text NOT NULL,
+    UNIQUE (name, version, params_hash)
+);
+
+-- Moved above survey_runs (A3's ordering trap): survey_runs.bench_run_id
+-- references this table, so it must exist first or the migration fails on an
+-- unknown relation.
+CREATE TABLE IF NOT EXISTS bench_runs (
+    bench_run_id     uuid PRIMARY KEY,
+    label            text,
+    grid_point       jsonb NOT NULL DEFAULT '{}',
+    frames_offered   integer,
+    frames_processed integer,
+    frames_dropped   integer,
+    p50_ms           numeric,
+    p95_ms           numeric,
+    p99_ms           numeric,
+    precision        numeric,
+    recall           numeric,
+    f1               numeric,
+    bytes_stored     bigint,
+    peak_rss_mb      numeric,
+    cpu_pct          numeric,
+    started_at       timestamptz,
+    ended_at         timestamptz
+);
+
+-- Renamed: a "run" is now one drive, not a factory shift.
+CREATE TABLE IF NOT EXISTS survey_runs (
+    run_id       uuid PRIMARY KEY,
+    authority_id text NOT NULL,          -- council/authority owning this drive
+    vehicle_ref  text,
+    started_at   timestamptz NOT NULL,
+    ended_at     timestamptz,
+    source_kind  text NOT NULL
+                 CHECK (source_kind IN ('dataset-replay', 'drive', 'synthetic')),
+    source_ref   text NOT NULL,
+    target_fps   numeric NOT NULL,
+    prevalence   numeric,
+    transport    text NOT NULL CHECK (transport IN ('inline', 'reference')),
+    config       jsonb NOT NULL DEFAULT '{}',
+    device       jsonb NOT NULL DEFAULT '{}',   -- handset, OS, camera params
+    bench_run_id uuid REFERENCES bench_runs (bench_run_id)
+);
+
+-- Range-partitioned on captured_at so retention is a partition DROP, not a mass
+-- DELETE. A partitioned table's PK must contain the partition key (R-R5).
+--
+-- Position is PLAIN float here, not PostGIS: on this hot, high-volume table the
+-- coordinates are only telemetry, and keeping the extension off it is deliberate
+-- (R-R1 hybrid storage). Geometry lives on segments and defect_instances.
+--
+-- Only a DEFAULT partition for now. Monthly partitions and the retention reaper
+-- are the W9 compaction task; DEFAULT routes every row correctly until then.
+CREATE TABLE IF NOT EXISTS frames (
+    run_id          uuid NOT NULL,
+    seq             bigint NOT NULL,
+    captured_at     timestamptz NOT NULL,
+    enqueued_at     timestamptz NOT NULL,
+    width           integer NOT NULL,
+    height          integer NOT NULL,
+    source_ref      text NOT NULL,
+    sha256          char(64) NOT NULL,
+    lat             double precision,
+    lon             double precision,
+    heading_deg     real,
+    speed_mps       real,
+    gps_accuracy_m  real,
+    capture_mono_ns bigint,
+    device_boot_id  uuid,
+    PRIMARY KEY (run_id, seq, captured_at)
+) PARTITION BY RANGE (captured_at);
+
+CREATE TABLE IF NOT EXISTS frames_default PARTITION OF frames DEFAULT;
+
+-- R-R5: "all frames for run X" prunes nothing unless the query also constrains
+-- time. The read path adds that from survey_runs; this index covers the rest.
+CREATE INDEX IF NOT EXISTS frames_run_seq_idx ON frames (run_id, seq);
+
+CREATE TABLE IF NOT EXISTS snippets (
+    snippet_id  bigserial PRIMARY KEY,
+    sha256      char(64) NOT NULL,
+    kind        text NOT NULL CHECK (kind IN ('crop', 'thumbnail')),
+    format      text NOT NULL,
+    bytes       integer NOT NULL,
+    width       integer NOT NULL,
+    height      integer NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (sha256, kind)
+);
+
+CREATE TABLE IF NOT EXISTS inferences (
+    inference_id  bigserial PRIMARY KEY,
+    run_id        uuid NOT NULL,
+    seq           bigint NOT NULL,
+    captured_at   timestamptz NOT NULL,
+    detector_id   bigint NOT NULL REFERENCES detectors (detector_id),
+    worker_id     text NOT NULL,
+    started_at    timestamptz NOT NULL,
+    latency_ms    numeric NOT NULL,
+    status        text NOT NULL CHECK (status IN ('ok', 'failed', 'skipped')),
+    error         text,
+    UNIQUE (run_id, seq, detector_id)          -- the idempotency key
+);
+
+CREATE INDEX IF NOT EXISTS inferences_captured_at_idx ON inferences (captured_at);
+
+CREATE TABLE IF NOT EXISTS detections (
+    detection_id  bigserial PRIMARY KEY,
+    inference_id  bigint NOT NULL REFERENCES inferences (inference_id) ON DELETE CASCADE,
+    defect_class  text NOT NULL,
+    confidence    numeric,
+    bbox_x        integer NOT NULL,
+    bbox_y        integer NOT NULL,
+    bbox_w        integer NOT NULL,
+    bbox_h        integer NOT NULL,
+    area_px       integer NOT NULL,
+    severity      text NOT NULL CHECK (severity IN ('minor', 'major', 'critical')),
+    snippet_id    bigint REFERENCES snippets (snippet_id)
+);
+
+CREATE INDEX IF NOT EXISTS detections_inference_idx ON detections (inference_id);
+
+CREATE TABLE IF NOT EXISTS ground_truth (
+    gt_id         bigserial PRIMARY KEY,
+    source_ref    text NOT NULL,
+    defect_class  text NOT NULL,
+    bbox_x        integer NOT NULL,
+    bbox_y        integer NOT NULL,
+    bbox_w        integer NOT NULL,
+    bbox_h        integer NOT NULL,
+    UNIQUE (source_ref, defect_class, bbox_x, bbox_y, bbox_w, bbox_h)
+);
+
+-- Spec §5 view 6 — the coverage panel, per minute. Replaces the old defect-rate
+-- materialized view (A4): that matview fed an SPC p-chart spec §5 no longer
+-- has. This view feeds the panel spec §5 actually specifies: "km surveyed vs
+-- km attempted, frames dropped, GPS gaps".
+--
+-- A plain VIEW, not materialized — no periodic refresh function, no manual
+-- refresh fallback, no unique index to support one. Instant at skeleton
+-- volumes.
+--
+-- `frames` is the denominator, which is why every frame gets a row including the
+-- clean ones: "we assessed 14.2 km of 15 km" is only provable if every frame is
+-- accounted for. Storage discipline applies to PIXELS, not rows.
+CREATE OR REPLACE VIEW run_coverage_1min AS
+SELECT
+    date_trunc('minute', f.captured_at)                AS bucket,
+    f.run_id                                           AS run_id,
+    count(*)                                           AS frames_ingested,
+    count(i.inference_id)                              AS frames_processed,
+    count(*) FILTER (WHERE d.detection_id IS NOT NULL) AS frames_flagged,
+    count(*) FILTER (WHERE f.lat IS NULL)              AS frames_without_fix
+FROM frames f
+LEFT JOIN inferences i
+       ON i.run_id = f.run_id AND i.seq = f.seq AND i.captured_at = f.captured_at
+LEFT JOIN LATERAL (
+    SELECT detection_id FROM detections WHERE inference_id = i.inference_id LIMIT 1
+) d ON true
+GROUP BY 1, 2;
+
+-- Geospatial tables (segments, defect_instances, instance_reviews,
+-- segment_condition) are appended below by the next migration task, after
+-- `detections` (their best_detection_id FK target already exists above).
