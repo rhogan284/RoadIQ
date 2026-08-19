@@ -47,13 +47,27 @@ def repo(pg_conn):
 
 
 def test_position_round_trips_through_the_writer(pg_conn, repo):
-    repo.write_results([
+    stats = repo.write_results([
         _result(seq=501, lat=-33.8688, lon=151.2093, speed_mps=16.7),
         _result(seq=502),                      # fixture frame, no GPS
     ])
+    assert stats.frames == 2
     with pg_conn.cursor() as cur:
         cur.execute("SELECT seq, lat, lon FROM frames WHERE seq IN (501, 502) "
                     "ORDER BY seq")
         rows = cur.fetchall()
     assert float(rows[0][1]) == pytest.approx(-33.8688)
     assert rows[1][1] is None and rows[1][2] is None
+
+
+def test_detections_get_a_populated_snippet_id(pg_conn, repo):
+    """snippet_id must never be NULL on a written detection: a later
+    end-to-end test asserts count(*) FROM detections WHERE snippet_id IS NULL
+    == 0."""
+    stats = repo.write_results([_result(seq=600)])
+    assert stats.detections == 1
+    assert stats.skipped_duplicates == 0
+    with pg_conn.cursor() as cur:
+        cur.execute("SELECT snippet_id FROM detections")
+        snippet_ids = [r[0] for r in cur.fetchall()]
+    assert snippet_ids and all(s is not None for s in snippet_ids)

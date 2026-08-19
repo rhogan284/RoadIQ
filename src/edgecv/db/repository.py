@@ -1,20 +1,29 @@
 """Idempotent batched writer from worker InferenceResults into Postgres.
 
 Insert order follows the schema's own FK dependency graph: detectors before
-inferences, inferences before detections. Every insert lands on the
-idempotency key the schema already enforces (frames on
-(run_id, seq, captured_at), inferences on (run_id, seq, detector_id)), so
-replaying a batch -- e.g. after a worker crash and stream redelivery -- is a
-no-op rather than a duplicate.
+inferences, inferences before detections, snippets before the detections
+that reference them. Every insert lands on the idempotency key the schema
+already enforces (frames on (run_id, seq, captured_at), inferences on
+(run_id, seq, detector_id)), so replaying a batch -- e.g. after a worker
+crash and stream redelivery -- is a no-op rather than a duplicate.
 """
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 
 import psycopg
 
 from edgecv.contracts.detection import DetectorInfo, InferenceResult
+
+
+@dataclass(frozen=True, slots=True)
+class WriteStats:
+    frames: int
+    inferences: int
+    detections: int
+    skipped_duplicates: int
 
 
 class Repository:
@@ -69,11 +78,31 @@ class Repository:
         )
         return cur.fetchone()[0]
 
-    def write_results(self, results: list[InferenceResult]) -> dict[str, int]:
+    def _snippet_id(self, cur: psycopg.Cursor, sha256: str, kind: str, *,
+                     fmt: str = "png", bytes_len: int = 0, width: int = 0,
+                     height: int = 0) -> int:
+        """Snippets are content-addressed by (sha256, kind); the writer only
+        has the hash and dimensions from the contract (bbox for a crop, the
+        frame size for a thumbnail), not the actual byte size or encoding, so
+        `format`/`bytes` take safe defaults rather than blocking the write."""
+        cur.execute(
+            """
+            INSERT INTO snippets (sha256, kind, format, bytes, width, height)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (sha256, kind) DO NOTHING
+            """,
+            (sha256, kind, fmt, bytes_len, width, height),
+        )
+        cur.execute("SELECT snippet_id FROM snippets WHERE sha256=%s AND kind=%s",
+                    (sha256, kind))
+        return cur.fetchone()[0]
+
+    def write_results(self, results: list[InferenceResult]) -> WriteStats:
         """Persist a batch of worker results. Idempotent: replaying the same
         batch inserts nothing twice, because every insert is keyed on the
-        idempotency key the schema enforces."""
-        frames = inferences = detections = 0
+        idempotency key the schema enforces. `skipped_duplicates` counts the
+        (run_id, seq, detector_id) pairs already recorded by an earlier call."""
+        frames = inferences = detections = duplicates = 0
         with self.conn.cursor() as cur:
             for result in results:
                 # Frame row: the coverage denominator. Every frame gets one,
@@ -100,6 +129,8 @@ class Repository:
 
                 detector_id = self._upsert_detector(cur, result.detector)
 
+                # RETURNING tells us whether WE created the inference row --
+                # NULL back means (run_id, seq, detector_id) already existed.
                 cur.execute(
                     """
                     INSERT INTO inferences (run_id, seq, captured_at, detector_id,
@@ -115,31 +146,36 @@ class Repository:
                 )
                 row = cur.fetchone()
                 if row is None:
-                    # (run_id, seq, detector_id) already recorded -- a
-                    # redelivered batch. Detections were written the first
-                    # time; do not duplicate them.
+                    # Already present -- its detections are already stored.
+                    duplicates += 1
                     continue
-                inferences += 1
                 inference_id = row[0]
+                inferences += 1
 
-                # snippet_id is left NULL: InferenceResult carries only the
-                # snippet's content hash (snippet_sha256s), not the
-                # width/height/format/bytes the `snippets` table requires.
-                # Resolving those needs a blob-metadata lookup that is not
-                # part of this contract -- out of scope for this pass, see
-                # the dispatch report.
-                for d in result.detections:
+                if result.thumbnail_sha256:
+                    self._snippet_id(cur, result.thumbnail_sha256, "thumbnail",
+                                      width=result.width, height=result.height)
+
+                for detection, snippet_sha in zip(result.detections,
+                                                   result.snippet_sha256s,
+                                                   strict=True):
+                    snippet_id = self._snippet_id(
+                        cur, snippet_sha, "crop",
+                        width=detection.bbox.w, height=detection.bbox.h,
+                    )
                     cur.execute(
                         """
                         INSERT INTO detections (inference_id, defect_class, confidence,
                                                 bbox_x, bbox_y, bbox_w, bbox_h,
                                                 area_px, severity, snippet_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        (inference_id, d.defect_class, d.confidence,
-                         d.bbox.x, d.bbox.y, d.bbox.w, d.bbox.h,
-                         d.bbox.area, d.severity),
+                        (inference_id, detection.defect_class, detection.confidence,
+                         detection.bbox.x, detection.bbox.y, detection.bbox.w,
+                         detection.bbox.h, detection.bbox.area, detection.severity,
+                         snippet_id),
                     )
-                    detections += cur.rowcount
+                    detections += 1
 
-        return {"frames": frames, "inferences": inferences, "detections": detections}
+        return WriteStats(frames=frames, inferences=inferences,
+                           detections=detections, skipped_duplicates=duplicates)

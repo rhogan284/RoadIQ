@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from edgecv.dashboard import coverage_series
+from edgecv.dashboard.app import coverage_series
 from edgecv.db.repository import Repository
 from tests.test_repository import _result
 
