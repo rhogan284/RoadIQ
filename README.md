@@ -25,3 +25,18 @@ See `docs/` and the design spec for detail.
 
 `src/edgecv/contracts/` is frozen. Changing `frame.py` or `detection.py` breaks other
 people's work — raise it with the team before editing.
+
+## Development / Troubleshooting
+
+On some machines (observed on macOS) the editable-install `.pth` file that `uv sync`
+generates isn't picked up by `site.py`, so a bare `python -c "import edgecv"` fails
+with `ModuleNotFoundError` even right after `make install`. `uv run pytest` still
+works because pytest's own `pythonpath = ["src"]` setting doesn't depend on the
+`.pth` file.
+
+All `make` targets set `PYTHONPATH=src` so they aren't affected. If you run a
+bare `python`/`uv run python` command outside of `make` and hit
+`ModuleNotFoundError: No module named 'edgecv'`, either use the equivalent `make`
+target or export it yourself:
+
+    PYTHONPATH=src uv run python -m edgecv.db.migrate
