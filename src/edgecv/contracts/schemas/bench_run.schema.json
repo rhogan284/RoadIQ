@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BenchRun",
+  "description": "CONTRACT 4 \u2014 one row of bench_runs. PROVISIONAL.",
+  "x-status": "PROVISIONAL",
+  "x-owner": "Ilana",
+  "type": "object",
+  "required": [
+    "bench_run_id"
+  ],
+  "properties": {
+    "bench_run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "grid_point": {
+      "type": "object",
+      "description": "Free-form today (jsonb DEFAULT '{}'). Grid axes are not yet decided \u2014 do not assume any key here survives."
+    },
+    "frames_offered": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "frames_processed": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "frames_dropped": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "p50_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "p95_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "p99_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "precision": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "recall": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "f1": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "bytes_stored": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "peak_rss_mb": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "cpu_pct": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  },
+  "x-notes": "survey_runs.bench_run_id references this table, so a run can be tied to a benchmark grid point, but the grid axes (what varies between bench_run rows) are Ilana's to define."
+}

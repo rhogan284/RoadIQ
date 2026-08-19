@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SegmentFeature",
+  "description": "CONTRACT 6 \u2014 one GeoJSON Feature: a road segment plus its latest condition score. PROVISIONAL.",
+  "x-status": "PROVISIONAL",
+  "x-owner": "Ryan (shape) / Ilana (index)",
+  "type": "object",
+  "required": [
+    "type",
+    "geometry",
+    "properties"
+  ],
+  "properties": {
+    "type": {
+      "const": "Feature"
+    },
+    "geometry": {
+      "type": "object",
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "properties": {
+        "type": {
+          "const": "LineString"
+        },
+        "coordinates": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[longitude, latitude] \u2014 RFC 7946 order, X before Y. Same order as PostGIS ST_MakePoint(lon, lat), and the same trap: swap them and every point lands in the wrong hemisphere without erroring."
+          }
+        }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "required": [
+        "segment_id",
+        "authority_id",
+        "road_name",
+        "length_m"
+      ],
+      "properties": {
+        "segment_id": {
+          "type": "integer"
+        },
+        "authority_id": {
+          "type": "string"
+        },
+        "road_name": {
+          "type": "string"
+        },
+        "road_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "length_m": {
+          "type": "number"
+        },
+        "surface_type": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "assessed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "condition_index": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Definition is Ilana's to make \u2014 this is the slot it lands in, not a formula."
+        },
+        "condition_band": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counts": {
+          "type": "object",
+          "description": "Per-class instance counts. jsonb, DEFAULT '{}'."
+        },
+        "frames_assessed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "coverage_m": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "x-notes": "One score per (segment_id, run_id), so re-surveying ADDS a row rather than overwriting one \u2014 a consumer that wants 'current condition' must pick the latest run_id per segment itself; this schema does not do that filtering for you."
+}

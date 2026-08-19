@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CaptureManifest",
+  "description": "CONTRACT 5 \u2014 Dexter's device -> Ryan's ingest path. PROVISIONAL.",
+  "x-status": "PROVISIONAL",
+  "x-owner": "Dexter",
+  "type": "object",
+  "required": [
+    "run_id",
+    "seq",
+    "captured_at",
+    "capture_mono_ns",
+    "device_boot_id",
+    "sha256"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "GPS-derived UTC where a fix exists at capture time; best-effort device clock otherwise."
+    },
+    "capture_mono_ns": {
+      "type": "integer",
+      "description": "Required (not optional, unlike the frame envelope) \u2014 the manifest is device-authored, so the boot-relative clock always exists at capture time."
+    },
+    "device_boot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "lat": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lon": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "heading_deg": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "speed_mps": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "gps_accuracy_m": {
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  },
+  "dependentRequired": {
+    "lat": [
+      "lon"
+    ],
+    "lon": [
+      "lat"
+    ]
+  },
+  "x-notes": "spool_seq is DEFERRED, not forgotten \u2014 it depends on an unanswered question about whether inference is deferred to a laptop, so it is deliberately absent from this schema rather than guessed at. The device spool itself is SQLite/WAL + tus resumable upload, not Redis, so this manifest is not a FrameEnvelope and is not published on the frames stream directly by the device."
+}

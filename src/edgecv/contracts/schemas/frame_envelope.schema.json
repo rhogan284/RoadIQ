@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FrameEnvelope",
+  "description": "CONTRACT 1 \u2014 published by feed-sim onto the frames stream. FROZEN 2026-08-19.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "seq",
+    "captured_at",
+    "width",
+    "height",
+    "source_ref",
+    "sha256",
+    "transport"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Absolute time, timezone-aware. GPS-derived UTC preferred when a fix exists."
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_ref": {
+      "type": "string"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "transport": {
+      "enum": [
+        "inline",
+        "reference"
+      ]
+    },
+    "payload": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "description": "Required when transport=inline, absent otherwise."
+    },
+    "path": {
+      "type": "string",
+      "description": "Required when transport=reference, absent otherwise."
+    },
+    "lat": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lon": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "heading_deg": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "speed_mps": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "gps_accuracy_m": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "capture_mono_ns": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Boot-relative. Comparable only within one (device_boot_id, run_id). Never an absolute time."
+    },
+    "device_boot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid",
+      "description": "Required when capture_mono_ns is present."
+    }
+  },
+  "dependentRequired": {
+    "capture_mono_ns": [
+      "device_boot_id"
+    ],
+    "lat": [
+      "lon"
+    ],
+    "lon": [
+      "lat"
+    ]
+  },
+  "if": {
+    "properties": {
+      "transport": {
+        "const": "inline"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "payload"
+    ]
+  },
+  "else": {
+    "required": [
+      "path"
+    ]
+  }
+}
