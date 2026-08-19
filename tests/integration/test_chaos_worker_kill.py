@@ -18,6 +18,20 @@ that gating explicitly (drain reads to empty, THEN loop reclaim to empty) rather
 polling reclaim() on a timer, and both use a finite feed published in full before any
 consumer starts, so the "read comes back empty" condition is reached quickly and
 deterministically.
+
+These tests own Redis outright and require the docker-compose app services
+(worker, writer, feedsim, dashboard) to be STOPPED before running -- redis and
+postgres should stay up. Two independent reasons, either one sufficient on its
+own: (1) the `rds` fixture flushes the whole Redis DB on setup and teardown, so
+running these tests destroys a live stack's stream and consumer group; (2) this
+file reads from `stream="frames"`, `group="workers"` -- the same stream and
+consumer group the real containerised workers consume from -- so a live stack
+races the `doomed`/`survivor` consumers here for the same frames and breaks the
+exact counts this file asserts on (a real containerised worker can "steal" a
+frame the test expects `survivor` to reclaim). `make itest` stops the app
+services for you; if you invoke pytest directly instead, stop them yourself
+first (`docker compose stop worker writer feedsim dashboard`) or a confusing
+count mismatch here is very likely a stale live stack, not a real bug.
 """
 from __future__ import annotations
 

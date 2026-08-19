@@ -11,7 +11,7 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
     make up               # redis + postgres
     make migrate          # apply schema
     make test             # unit tests
-    make itest            # integration tests (needs `make up`)
+    make itest            # integration tests (needs `make up`; stops app services first, see below)
     make demo             # full pipeline under compose
 
 ## Architecture
@@ -40,3 +40,14 @@ bare `python`/`uv run python` command outside of `make` and hit
 target or export it yourself:
 
     PYTHONPATH=src uv run python -m edgecv.db.migrate
+
+The integration suite (`make itest`, or `tests/integration/`) is mutually exclusive
+with a running app stack, not just by convention: its `rds` fixture flushes the
+whole Redis DB on setup and teardown, and `tests/integration/test_chaos_worker_kill.py`
+reads from the same `frames`/`workers` stream and consumer group the containerised
+`worker` service consumes from, so a live stack races the test's own consumers and
+breaks its exact frame counts. `make itest` stops `worker`, `writer`, `feedsim` and
+`dashboard` before running pytest (redis and postgres are left up); it does not
+restart them afterwards, so run `make demo` or `docker compose up -d` again when you
+want the full pipeline back. If you invoke `pytest` directly instead of through
+`make itest`, stop those four services yourself first.

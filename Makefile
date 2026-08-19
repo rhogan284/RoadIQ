@@ -21,6 +21,15 @@ test:
 	uv run pytest -m "not integration" -v
 
 itest:
+	# The integration suite (in particular tests/integration/test_chaos_worker_kill.py)
+	# owns the `frames`/`workers` stream and consumer group outright: its `rds`
+	# fixture flushes the whole Redis DB on setup AND teardown, and its chaos
+	# test reads from the same stream/group the containerised workers consume
+	# from. A live app stack racing the test's own consumers breaks its frame
+	# counts, and the flush destroys the live stack's stream regardless. So
+	# stop the app services first -- redis and postgres stay up, `make up`
+	# brings the app services back when you want them.
+	docker compose stop worker writer feedsim dashboard
 	uv run pytest -m integration -v
 
 demo:
