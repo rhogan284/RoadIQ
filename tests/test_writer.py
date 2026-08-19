@@ -69,3 +69,21 @@ def test_empty_stream_is_a_no_op(rds, seeded):
     stats = drain_once(rds, seeded, stream="results", group="writers",
                        consumer="w", batch=10)
     assert stats.frames == 0 and stats.detections == 0
+
+
+def test_own_pending_entry_from_a_prior_crash_is_still_processed(rds, clean_db, seeded):
+    """A crash between XREADGROUP and XACK leaves the entry delivered to this
+    consumer but unacked, sitting in its PEL. ">" alone never returns it again --
+    drain_once must drain "0" (this consumer's own pending list) first."""
+    from edgecv.writer.main import _ensure_group
+
+    rds.xadd("results", {"json": result(1, 1).to_json()})
+    _ensure_group(rds, "results", "writers")
+    # Simulate the crash: deliver the entry to writer-1 and never ack it.
+    delivered = rds.xreadgroup("writers", "writer-1", {"results": ">"}, count=10)
+    assert delivered and delivered[0][1]        # sanity: it really was delivered
+
+    stats = drain_once(rds, seeded, stream="results", group="writers",
+                       consumer="writer-1", batch=10)
+    assert stats.frames == 1
+    assert count(clean_db, "detections") == 1

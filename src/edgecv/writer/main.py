@@ -33,8 +33,16 @@ def _ensure_group(client: redis.Redis, stream: str, group: str) -> None:
 def drain_once(client: redis.Redis, repo: Repository, *, stream: str, group: str,
                consumer: str, batch: int, block_ms: int = 0) -> WriteStats:
     _ensure_group(client, stream, group)
-    response = client.xreadgroup(group, consumer, {stream: ">"},
-                                 count=batch, block=block_ms or None)
+    # Own PEL first: entries delivered to this consumer but never acked (a crash
+    # between XREADGROUP and XACK, or an exception raised anywhere inside
+    # write_results). ">" never returns them, so without this read they are
+    # unreachable forever -- a poison message will now be retried forever
+    # instead, which is the accepted trade-off at this scale (no dead-letter
+    # handling is in scope).
+    response = client.xreadgroup(group, consumer, {stream: "0"}, count=batch)
+    if not response or not response[0][1]:
+        response = client.xreadgroup(group, consumer, {stream: ">"},
+                                     count=batch, block=block_ms or None)
     if not response:
         return WriteStats(frames=0, inferences=0, detections=0, skipped_duplicates=0)
 
