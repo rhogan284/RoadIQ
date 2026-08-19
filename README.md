@@ -12,12 +12,20 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
     make migrate          # apply schema
     make test             # unit tests
     make itest            # integration tests (needs `make up`; stops app services first, see below)
+    make fixtures         # generate synthetic fixture images (needed once for make demo)
     make demo             # full pipeline under compose
 
 ## Architecture
 
-Redis Streams is the edge/plant seam. Left of it (feed-sim, worker) is what would run on
-a device; right of it (writer, Postgres, dashboard) is plant infrastructure.
+Redis Streams is the edge/backend seam. Left of it (feed-sim, worker) is what would run on
+a device; right of it (writer, Postgres, dashboard) is backend infrastructure.
+
+feed-sim is the exception to that split: it also registers each run in Postgres'
+`survey_runs` (`upsert_run`/`finish_run`), because it's the only component that knows
+`run_id`, `target_fps`, `prevalence`, `transport` and the source. That's a Postgres write
+on the edge side of the seam -- an accepted trade for this milestone, since feed-sim is a
+test harness standing in for both the device and the run-registration step, not a
+statement that the real device will write to Postgres directly.
 
 See `docs/` and the design spec for detail.
 

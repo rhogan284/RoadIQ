@@ -63,10 +63,20 @@ class Repository:
                  json.dumps(config or {}), json.dumps(device or {})),
             )
 
-    def finish_run(self, run_id: str, ended_at: datetime) -> None:
+    def finish_run(self, run_id: str, ended_at: datetime, *,
+                   config: dict | None = None) -> None:
+        """`config` (I1) records feed-level counts the caller already has --
+        e.g. feedsim's `{"frames_offered": n, "frames_dropped": n}` -- into the
+        existing `survey_runs.config jsonb`, so no migration is needed."""
         with self.conn.cursor() as cur:
-            cur.execute("UPDATE survey_runs SET ended_at=%s WHERE run_id=%s",
-                        (ended_at, run_id))
+            if config is None:
+                cur.execute("UPDATE survey_runs SET ended_at=%s WHERE run_id=%s",
+                            (ended_at, run_id))
+            else:
+                cur.execute(
+                    "UPDATE survey_runs SET ended_at=%s, config=%s WHERE run_id=%s",
+                    (ended_at, json.dumps(config), run_id),
+                )
 
     def _upsert_detector(self, cur: psycopg.Cursor, detector: DetectorInfo) -> int:
         """Detector identity is (name, version, params_hash): a retuned

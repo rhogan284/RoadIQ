@@ -12,11 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
+import psycopg
 import redis
 
 from edgecv.bus.producer import FrameProducer
 from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
+from edgecv.db.migrate import apply_migrations
+from edgecv.db.repository import Repository
 from edgecv.feedsim.prevalence import PrevalenceSampler, pace_deadlines
 
 
@@ -75,7 +78,7 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
 
 def main() -> None:
     settings = Settings.from_env()
-    ap = argparse.ArgumentParser(description="Simulated production-line frame feed")
+    ap = argparse.ArgumentParser(description="Simulated road-survey frame feed")
     ap.add_argument("--manifest", type=Path,
                     default=Path("tests/fixtures/generated/manifest.json"))
     ap.add_argument("--frames", type=int, default=200)
@@ -83,16 +86,38 @@ def main() -> None:
     ap.add_argument("--prevalence", type=float, default=0.02)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-id", default=None)
+    ap.add_argument("--authority-id", default="demo-council")
     ap.add_argument("--transport", choices=["inline", "reference"],
                     default="reference")
     args = ap.parse_args()
 
+    run_id = args.run_id or str(uuid.uuid4())
     client = redis.from_url(settings.redis_url, decode_responses=False)
-    stats = run_feed(client, manifest=args.manifest, run_id=args.run_id,
-                     n_frames=args.frames, fps=args.fps,
-                     prevalence=args.prevalence, maxlen=settings.frames_maxlen,
-                     seed=args.seed, stream=settings.frames_stream,
-                     transport=args.transport)
+
+    # feedsim is the only component that knows run_id, target_fps, prevalence,
+    # transport and the source, so it registers the run -- nothing else in the
+    # running system writes survey_runs. This puts a Postgres write on the
+    # "edge" side of the frames-stream seam described in README.md; see the
+    # note there for why that's an accepted trade for this milestone.
+    with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
+        apply_migrations(conn)
+        repo = Repository(conn)
+        repo.upsert_run(run_id=run_id, authority_id=args.authority_id,
+                        started_at=datetime.now(timezone.utc),
+                        source_kind="synthetic", source_ref=str(args.manifest),
+                        target_fps=args.fps, prevalence=args.prevalence,
+                        transport=args.transport)
+
+        stats = run_feed(client, manifest=args.manifest, run_id=run_id,
+                         n_frames=args.frames, fps=args.fps,
+                         prevalence=args.prevalence, maxlen=settings.frames_maxlen,
+                         seed=args.seed, stream=settings.frames_stream,
+                         transport=args.transport)
+
+        repo.finish_run(stats.run_id, datetime.now(timezone.utc),
+                       config={"frames_offered": stats.offered,
+                               "frames_dropped": stats.dropped})
+
     print(f"run_id={stats.run_id} offered={stats.offered} "
           f"published={stats.published} dropped={stats.dropped}")
 
