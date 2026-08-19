@@ -5,12 +5,12 @@ pytestmark = pytest.mark.integration
 
 # Per amendment A3, the run table was renamed (a "run" is one drive, not a
 # factory shift). The four geospatial tables from amendment A5 (segments,
-# defect instances, instance reviews, segment condition) are NOT added here:
-# A5 is a separate, later migration task and those tables do not exist yet in
-# 001_initial.sql.
+# defect instances, instance reviews, segment condition) are now included:
+# A5 has landed in 001_initial.sql.
 EXPECTED_TABLES = {
     "detectors", "survey_runs", "frames", "snippets",
     "inferences", "detections", "ground_truth", "bench_runs",
+    "segments", "defect_instances", "instance_reviews", "segment_condition",
 }
 
 def test_apply_creates_all_tables(pg):

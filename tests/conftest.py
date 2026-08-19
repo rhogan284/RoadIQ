@@ -19,7 +19,8 @@ def clean_db(pg):
     from edgecv.db.migrate import apply_migrations
     apply_migrations(pg)
     with pg.cursor() as cur:
-        cur.execute("TRUNCATE detections, inferences, snippets, frames, "
+        cur.execute("TRUNCATE defect_instances, segment_condition, instance_reviews, "
+                    "segments, detections, inferences, snippets, frames, "
                     "detectors, survey_runs, ground_truth, bench_runs")
     return pg
 

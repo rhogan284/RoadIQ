@@ -177,3 +177,87 @@ GROUP BY 1, 2;
 -- Geospatial tables (segments, defect_instances, instance_reviews,
 -- segment_condition) are appended below by the next migration task, after
 -- `detections` (their best_detection_id FK target already exists above).
+
+-- ===========================================================================
+-- Geospatial and defect-instance model. R-R1 (PostGIS geography) + R-R2
+-- (recompute-and-replace). Empty in the skeleton: Ilana's segmenter fills
+-- defect_instances and segment_condition, Joseph's read API writes reviews.
+-- Created NOW so neither arrival needs a migration.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS segments (
+    segment_id   bigserial PRIMARY KEY,
+    authority_id text NOT NULL,
+    road_name    text NOT NULL,
+    road_ref     text,
+    geom         geography(LineString, 4326) NOT NULL,
+    length_m     double precision NOT NULL,
+    surface_type text NOT NULL DEFAULT 'sealed'
+);
+
+CREATE INDEX IF NOT EXISTS segments_geom_gix ON segments USING GIST (geom);
+
+-- One row per PHYSICAL defect, clustered from the 2-9 detections that saw it.
+-- DERIVED DATA: the segmenter recomputes all rows for a (run_id, segment_id) and
+-- swaps them in one transaction, which is what makes it idempotent regardless of
+-- which clustering algorithm runs inside (R-R2).
+--
+-- Note the absence of review columns — recompute-and-replace churns instance_id,
+-- so human decisions live in instance_reviews instead.
+CREATE TABLE IF NOT EXISTS defect_instances (
+    instance_id       bigserial PRIMARY KEY,
+    cluster_key       char(32) NOT NULL,   -- deterministic identity: hash of
+                                           -- (run_id, class, min(seq), ordinal)
+    run_id            uuid NOT NULL REFERENCES survey_runs (run_id),
+    segment_id        bigint REFERENCES segments (segment_id),
+    defect_class      text NOT NULL,
+    lat               double precision NOT NULL,
+    lon               double precision NOT NULL,
+    -- Generated geography, legal because ST_MakePoint, ST_SetSRID and
+    -- geography(geometry) are each IMMUTABLE (checked against the PostGIS
+    -- source, not a blog). ST_MakePoint takes (lon, lat) — X before Y.
+    geog              geography(Point, 4326)
+                      GENERATED ALWAYS AS (
+                          ST_SetSRID(ST_MakePoint(lon, lat), 4326)::geography
+                      ) STORED,
+    along_m           double precision,    -- ST_LineLocatePoint * length_m
+    first_seen_at     timestamptz NOT NULL,
+    last_seen_at      timestamptz NOT NULL,
+    observation_count integer NOT NULL DEFAULT 1,
+    peak_confidence   numeric,
+    severity          text NOT NULL,
+    extent_m          double precision,
+    best_detection_id bigint REFERENCES detections (detection_id) ON DELETE SET NULL,
+    UNIQUE (run_id, cluster_key)
+);
+
+CREATE INDEX IF NOT EXISTS defect_instances_geog_gix
+    ON defect_instances USING GIST (geog);
+
+-- Human input, not derived data. Keyed on the stable identity so it survives a
+-- segmenter re-run. No FK to defect_instances: a review may outlive the instance
+-- row it was made against, which is the entire point of this table.
+CREATE TABLE IF NOT EXISTS instance_reviews (
+    run_id       uuid NOT NULL REFERENCES survey_runs (run_id),
+    cluster_key  char(32) NOT NULL,
+    review_state text NOT NULL CHECK (review_state IN
+                     ('pending', 'confirmed', 'rejected', 'reclassified')),
+    new_class    text,
+    reviewed_by  text,
+    reviewed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (run_id, cluster_key)
+);
+
+-- One score per segment per survey, so re-surveying ADDS a row rather than
+-- overwriting one and change-over-time is a self-join.
+CREATE TABLE IF NOT EXISTS segment_condition (
+    segment_id      bigint NOT NULL REFERENCES segments (segment_id),
+    run_id          uuid NOT NULL REFERENCES survey_runs (run_id),
+    assessed_at     timestamptz NOT NULL,
+    condition_index numeric,
+    condition_band  text,
+    counts          jsonb NOT NULL DEFAULT '{}',   -- per-class instance counts
+    frames_assessed integer,
+    coverage_m      double precision,
+    PRIMARY KEY (segment_id, run_id)
+);
