@@ -82,3 +82,43 @@ def test_run_coverage_view_does_not_fan_out_across_detectors(clean_db):
         )
         row = cur.fetchone()
     assert row == (1, 1, 1), f"expected one frame counted once, got {row}"
+
+def test_concurrent_apply_migrations_does_not_race(pg):
+    """Regression: writer and feed-sim both call apply_migrations() at startup
+    against a possibly-virgin database. CREATE TABLE IF NOT EXISTS is idempotent
+    in effect but not atomic against a concurrent session doing the same thing --
+    before the advisory lock in migrate.py, concurrent callers reproducibly hit
+    UniqueViolation on the pg_type catalog (pg_type_typname_nsp_index). Runs
+    against a fresh, disposable database so the virgin-schema race is actually
+    exercised, not an already-migrated one."""
+    import concurrent.futures as cf
+    import os
+    import uuid
+
+    import psycopg
+
+    from edgecv.db.migrate import apply_migrations
+
+    base_dsn = os.environ.get("PG_DSN", "postgresql://edgecv:edgecv@localhost:5432/edgecv")
+    db_name = f"migrate_race_{uuid.uuid4().hex[:12]}"
+    race_dsn = f"{base_dsn.rsplit('/', 1)[0]}/{db_name}"
+
+    with pg.cursor() as cur:
+        cur.execute(f'CREATE DATABASE "{db_name}"')
+    try:
+        def go(_n):
+            with psycopg.connect(race_dsn, autocommit=True) as conn:
+                return apply_migrations(conn)
+
+        with cf.ThreadPoolExecutor(max_workers=4) as ex:
+            results = list(ex.map(go, range(4)))  # propagates any worker exception
+
+        with psycopg.connect(race_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM schema_migrations WHERE version='001_initial'")
+            assert cur.fetchone()[0] == 1
+
+        # Exactly one of the four callers should have seen an unapplied migration.
+        assert sum(1 for r in results if r) == 1
+    finally:
+        with pg.cursor() as cur:
+            cur.execute(f'DROP DATABASE "{db_name}"')
