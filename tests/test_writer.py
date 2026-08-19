@@ -10,7 +10,7 @@ T0 = datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc)
 
 
 def result(seq: int, n_detections: int = 0) -> InferenceResult:
-    dets = [Detection(defect_class="scratch", confidence=0.9,
+    dets = [Detection(defect_class="pothole", confidence=0.9,
                       bbox=BBox(x=5, y=5, w=20, h=20), severity="major")
             for _ in range(n_detections)]
     return InferenceResult(

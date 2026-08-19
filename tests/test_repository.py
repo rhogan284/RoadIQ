@@ -27,7 +27,7 @@ def _result(**kw):
         latency_ms=12.5,
         status="ok",
         error=None,
-        detections=[Detection(defect_class="scratch", confidence=0.9,
+        detections=[Detection(defect_class="pothole", confidence=0.9,
                               bbox=BBox(x=1, y=2, w=10, h=10), severity="minor")],
         snippet_sha256s=["c" * 64],
         thumbnail_sha256="d" * 64,

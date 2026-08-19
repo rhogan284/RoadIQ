@@ -1,4 +1,4 @@
-"""Generate synthetic production-line images with exact ground truth.
+"""Generate synthetic road-surface images with exact ground truth.
 
 Clean: uniform grey + gaussian noise.
 Defect: same, plus one dark rectangle whose bbox is recorded in the manifest.
@@ -49,7 +49,7 @@ def generate(out_dir: Path, *, n_clean: int, n_defect: int, size: int = 256,
         cv2.imwrite(str(path), img)
         manifest["defect"].append(
             {"path": str(path), "x": x, "y": y, "w": w, "h": h,
-             "defect_class": "scratch"}
+             "defect_class": "pothole"}
         )
 
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))

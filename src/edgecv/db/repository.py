@@ -104,7 +104,19 @@ class Repository:
         """Snippets are content-addressed by (sha256, kind); the writer only
         has the hash and dimensions from the contract (bbox for a crop, the
         frame size for a thumbnail), not the actual byte size or encoding, so
-        `format`/`bytes` take safe defaults rather than blocking the write."""
+        `format`/`bytes` take safe defaults rather than blocking the write.
+
+        `bytes`, `width` and `height` are all 0 placeholders (I2): the crop's
+        real dimensions are the padded blob `BlobStore.put()` actually wrote
+        (`CROP_PADDING_PX` per side larger than the bbox), and the thumbnail's
+        real dimensions are its resized 256px-long-edge, not the full frame --
+        `InferenceResult` carries only content hashes, so none of that survives
+        to the writer. The real values exist transiently in the worker's
+        `BlobRef` from `BlobStore.put()` and are discarded. A later milestone
+        reporting bytes-stored-per-km must either widen contract 2 to carry
+        them, or have the worker write these rows itself instead of the
+        writer inferring them from wire fields that were never meant to
+        describe the blob."""
         cur.execute(
             """
             INSERT INTO snippets (sha256, kind, format, bytes, width, height)
@@ -179,14 +191,14 @@ class Repository:
 
                 if result.thumbnail_sha256:
                     self._snippet_id(cur, result.thumbnail_sha256, "thumbnail",
-                                      width=result.width, height=result.height)
+                                      width=0, height=0)
 
                 for detection, snippet_sha in zip(result.detections,
                                                    result.snippet_sha256s,
                                                    strict=True):
                     snippet_id = self._snippet_id(
                         cur, snippet_sha, "crop",
-                        width=detection.bbox.w, height=detection.bbox.h,
+                        width=0, height=0,
                     )
                     cur.execute(
                         """

@@ -56,7 +56,7 @@ class ThresholdDetector:
                 continue
             bbox = BBox(x=int(x), y=int(y), w=int(w), h=int(h)).clamped(width, height)
             detections.append(Detection(
-                defect_class="scratch",
+                defect_class="pothole",
                 confidence=min(1.0, (mean - float(blurred[y:y + h, x:x + w].mean()))
                                / max(std, 1e-6) / self.k),
                 bbox=bbox,

@@ -1,4 +1,4 @@
-"""Control the defect rate of the simulated line, and pace frames without drift."""
+"""Control the defect rate of the simulated survey run, and pace frames without drift."""
 from __future__ import annotations
 
 import random
@@ -8,9 +8,9 @@ from typing import Iterator, Sequence
 class PrevalenceSampler:
     """Draw image paths with a target defect prevalence.
 
-    Public defect datasets are near-balanced; production lines are not. Sampling with
-    replacement from separate pools is what lets the dashboard show a realistic base
-    rate, which the p-chart's control limits depend on.
+    Public defect datasets are near-balanced; real road surveys are not. Sampling with
+    replacement from separate pools is what lets the dashboard's coverage panel show a
+    realistic base rate.
     """
 
     def __init__(self, clean: Sequence[str], defective: Sequence[str], *,

@@ -145,7 +145,8 @@ Example:
   "width": 1280, "height": 720,
   "source_ref": "fixtures/defect_003.png",
   "frame_sha256": "a1b2c3...64 hex chars",
-  "detector": {"name": "threshold", "version": "0.1", "params": {"min_area_px": 25}},
+  "detector": {"name": "threshold", "version": "1.0.0",
+               "params": {"k": 3.0, "min_area": 60, "blur_ksize": 5}},
   "worker_id": "worker-283f72b1cddc",
   "started_at": "2026-08-19T09:15:03.400000+00:00",
   "latency_ms": 42.7,
@@ -398,5 +399,5 @@ else has read.
   image, so Week 9 partition-retention work needs a custom Dockerfile. And the read API writes
   `instance_reviews`, **never** `defect_instances` — instances are derived and replaced wholesale.
 - **Everyone:** the run table is `survey_runs` with `authority_id` (it was `production_runs` /
-  `line_id` before the domain pivot). `docker-compose.yml` was written by Ryan as a placeholder in
-  Joseph's lane and should be handed over.
+  `line_id` before the domain pivot). Compose and CI sit in the observability/infrastructure lane;
+  `docker-compose.yml` as it stands today is a placeholder pending its owner.
