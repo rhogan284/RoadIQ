@@ -156,22 +156,33 @@ CREATE TABLE IF NOT EXISTS ground_truth (
 -- volumes.
 --
 -- `frames` is the denominator, which is why every frame gets a row including the
--- clean ones: "we assessed 14.2 km of 15 km" is only provable if every frame is
--- accounted for. Storage discipline applies to PIXELS, not rows.
+-- clean ones: "we assessed 14.2 km of the 15 km segment" is only provable if
+-- every frame is accounted for. Storage discipline applies to PIXELS, not rows.
+--
+-- Per-frame booleans are computed with EXISTS in the inner SELECT, then counted in
+-- the outer aggregate. Do NOT join frames to inferences here: inferences is
+-- UNIQUE(run_id, seq, detector_id), so one frame processed by N detectors would
+-- fan out to N rows and inflate every count -- silently overstating coverage.
 CREATE OR REPLACE VIEW run_coverage_1min AS
 SELECT
-    date_trunc('minute', f.captured_at)                AS bucket,
-    f.run_id                                           AS run_id,
-    count(*)                                           AS frames_ingested,
-    count(i.inference_id)                              AS frames_processed,
-    count(*) FILTER (WHERE d.detection_id IS NOT NULL) AS frames_flagged,
-    count(*) FILTER (WHERE f.lat IS NULL)              AS frames_without_fix
-FROM frames f
-LEFT JOIN inferences i
-       ON i.run_id = f.run_id AND i.seq = f.seq AND i.captured_at = f.captured_at
-LEFT JOIN LATERAL (
-    SELECT detection_id FROM detections WHERE inference_id = i.inference_id LIMIT 1
-) d ON true
+    date_trunc('minute', f.captured_at)     AS bucket,
+    f.run_id                                AS run_id,
+    count(*)                                AS frames_ingested,
+    count(*) FILTER (WHERE f.processed)     AS frames_processed,
+    count(*) FILTER (WHERE f.flagged)       AS frames_flagged,
+    count(*) FILTER (WHERE f.lat IS NULL)   AS frames_without_fix
+FROM (
+    SELECT fr.run_id, fr.seq, fr.captured_at, fr.lat,
+           EXISTS (SELECT 1 FROM inferences i
+                    WHERE i.run_id = fr.run_id AND i.seq = fr.seq
+                      AND i.captured_at = fr.captured_at
+                      AND i.status = 'ok')                       AS processed,
+           EXISTS (SELECT 1 FROM inferences i
+                    JOIN detections d ON d.inference_id = i.inference_id
+                    WHERE i.run_id = fr.run_id AND i.seq = fr.seq
+                      AND i.captured_at = fr.captured_at)         AS flagged
+    FROM frames fr
+) f
 GROUP BY 1, 2;
 
 -- Geospatial tables (segments, defect_instances, instance_reviews,

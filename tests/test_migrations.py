@@ -38,3 +38,47 @@ def test_run_coverage_view_exists(pg):
     with pg.cursor() as cur:
         cur.execute("SELECT count(*) FROM pg_views WHERE viewname='run_coverage_1min'")
         assert cur.fetchone()[0] == 1
+
+def test_run_coverage_view_does_not_fan_out_across_detectors(clean_db):
+    """Regression for the bug where the view joined frames to inferences before
+    aggregating: inferences is UNIQUE(run_id, seq, detector_id), so one frame
+    processed by two detectors fanned out to two joined rows and every count
+    was computed after the fan-out. One frame processed by two detectors must
+    still count as ONE frame in frames_ingested and frames_without_fix."""
+    run_id = "66666666-6666-6666-6666-666666666666"
+    captured_at = "2026-08-19T10:00:00+10:00"
+    with clean_db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO survey_runs (run_id, authority_id, started_at, source_kind, "
+            "source_ref, target_fps, transport) VALUES "
+            "(%s, 'demo-council', %s, 'synthetic', 'generated', 10, 'reference')",
+            (run_id, captured_at),
+        )
+        cur.execute(
+            "INSERT INTO frames (run_id, seq, captured_at, enqueued_at, width, "
+            "height, source_ref, sha256) VALUES "
+            "(%s, 1, %s, %s, 128, 128, 'fixtures/f.png', %s)",
+            (run_id, captured_at, captured_at, "a" * 64),
+        )
+        detector_ids = []
+        for name in ("threshold", "edge"):
+            cur.execute(
+                "INSERT INTO detectors (name, version, params, params_hash) "
+                "VALUES (%s, '1.0.0', '{}', %s) RETURNING detector_id",
+                (name, name),
+            )
+            detector_ids.append(cur.fetchone()[0])
+        for detector_id in detector_ids:
+            cur.execute(
+                "INSERT INTO inferences (run_id, seq, captured_at, detector_id, "
+                "worker_id, started_at, latency_ms, status) VALUES "
+                "(%s, 1, %s, %s, 'w1', %s, 5.0, 'ok')",
+                (run_id, captured_at, detector_id, captured_at),
+            )
+        cur.execute(
+            "SELECT frames_ingested, frames_processed, frames_without_fix "
+            "FROM run_coverage_1min WHERE run_id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+    assert row == (1, 1, 1), f"expected one frame counted once, got {row}"
