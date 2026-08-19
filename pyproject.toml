@@ -23,6 +23,9 @@ build-backend = "hatchling.build"
 packages = ["src/edgecv"]
 
 [tool.pytest.ini_options]
+# "." lets tests import the top-level `scripts` package (the fixture generator).
+# Confined to pytest's import resolution, not production runs. Don't add a
+# top-level directory whose name shadows a real dependency.
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = ["integration: requires docker compose services running"]
