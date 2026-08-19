@@ -34,7 +34,7 @@ def count(conn, table):
 def seeded(clean_db):
     from edgecv.db.repository import Repository
     repo = Repository(clean_db)
-    repo.upsert_run(run_id=RUN_ID, authority_id="line-1", started_at=T0,
+    repo.upsert_run(run_id=RUN_ID, authority_id="demo-council", started_at=T0,
                     source_kind="synthetic", source_ref="generated",
                     target_fps=15, prevalence=0.1, transport="reference")
     return repo
