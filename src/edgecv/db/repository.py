@@ -4,8 +4,18 @@ Insert order follows the schema's own FK dependency graph: detectors before
 inferences, inferences before detections, snippets before the detections
 that reference them. Every insert lands on the idempotency key the schema
 already enforces (frames on (run_id, seq, captured_at), inferences on
-(run_id, seq, detector_id)), so replaying a batch -- e.g. after a worker
-crash and stream redelivery -- is a no-op rather than a duplicate.
+(run_id, seq, detector_id)).
+
+Every connection this class is used with is autocommit=True, so without an
+explicit transaction each cur.execute() would commit the instant it runs.
+write_results wraps its whole loop in self.conn.transaction() specifically
+so a crash between an inference's commit and its detections' commits can
+never happen: either the entire batch lands, or none of it does. That is
+what makes "replaying a batch is a no-op rather than a duplicate" true --
+without it, a crash mid-batch commits the inference alone, and the
+replay's ON CONFLICT DO NOTHING sees that inference as already-recorded and
+silently skips the detections that were never written, losing them
+permanently.
 """
 from __future__ import annotations
 
@@ -101,9 +111,14 @@ class Repository:
         """Persist a batch of worker results. Idempotent: replaying the same
         batch inserts nothing twice, because every insert is keyed on the
         idempotency key the schema enforces. `skipped_duplicates` counts the
-        (run_id, seq, detector_id) pairs already recorded by an earlier call."""
+        (run_id, seq, detector_id) pairs already recorded by an earlier call.
+
+        The whole loop runs inside one self.conn.transaction(): on
+        autocommit=True connections that is what stops a crash between an
+        inference's commit and its detections' commits from permanently
+        losing those detections (see module docstring)."""
         frames = inferences = detections = duplicates = 0
-        with self.conn.cursor() as cur:
+        with self.conn.transaction(), self.conn.cursor() as cur:
             for result in results:
                 # Frame row: the coverage denominator. Every frame gets one,
                 # clean ones included. Position is null for generated fixtures.
