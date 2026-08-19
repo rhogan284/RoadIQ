@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReadAPI",
+  "description": "CONTRACT 3 \u2014 DB -> Joseph's read API. PROVISIONAL.",
+  "x-status": "PROVISIONAL",
+  "x-owner": "Joseph",
+  "type": "object",
+  "properties": {
+    "run_summary": {
+      "type": "object",
+      "description": "One row of survey_runs, shaped as run_options() in dashboard/app.py already reads it.",
+      "required": [
+        "run_id",
+        "authority_id",
+        "started_at",
+        "target_fps"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "authority_id": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "target_fps": {
+          "type": "number"
+        }
+      }
+    },
+    "coverage_point": {
+      "type": "object",
+      "description": "One row of the run_coverage_1min view, shaped as coverage_series() in dashboard/app.py already reads it.",
+      "required": [
+        "bucket",
+        "frames_ingested",
+        "frames_processed",
+        "frames_flagged",
+        "frames_without_fix"
+      ],
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "frames_ingested": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frames_processed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frames_flagged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frames_without_fix": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "x-notes": "Only the two shapes the dashboard already queries are shaped here. The map, worst-N segments and review-queue endpoints (dashboard/app.py's stated Week 9 replacement scope) still need Joseph's design before they can be frozen; segments and instance_reviews table shapes exist in 001_initial.sql for when that happens."
+}

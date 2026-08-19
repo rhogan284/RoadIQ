@@ -1,0 +1,11 @@
+.superpowers/
+.venv/
+__pycache__/
+*.pyc
+.env
+blobs/
+tests/fixtures/generated/
+data/
+.pytest_cache/
+.DS_Store
+.idea/

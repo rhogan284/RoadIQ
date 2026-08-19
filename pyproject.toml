@@ -1,0 +1,32 @@
+[project]
+name = "roadiq"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "redis>=5.0",
+    "psycopg[binary]>=3.2",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "pillow>=10.4",
+    "streamlit>=1.38",
+    "pandas>=2.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-timeout>=2.3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edgecv"]
+
+[tool.pytest.ini_options]
+# "." lets tests import the top-level `scripts` package (the fixture generator).
+# Confined to pytest's import resolution, not production runs. Don't add a
+# top-level directory whose name shadows a real dependency.
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+markers = ["integration: requires docker compose services running"]
+timeout = 120

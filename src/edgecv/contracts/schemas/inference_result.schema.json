@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InferenceResult",
+  "description": "CONTRACT 2 \u2014 emitted by workers, persisted by metadata-writer. FROZEN 2026-08-19.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "seq",
+    "captured_at",
+    "width",
+    "height",
+    "source_ref",
+    "frame_sha256",
+    "detector",
+    "worker_id",
+    "started_at",
+    "latency_ms",
+    "status",
+    "error",
+    "detections",
+    "snippet_sha256s",
+    "thumbnail_sha256"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_ref": {
+      "type": "string"
+    },
+    "frame_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "detector": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "params"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "description": "params_hash is NOT part of the wire contract \u2014 see module docstring and docs/CONTRACTS.md."
+    },
+    "worker_id": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "failed",
+        "skipped"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "defect_class",
+          "confidence",
+          "bbox",
+          "severity"
+        ],
+        "properties": {
+          "defect_class": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "bbox": {
+            "type": "object",
+            "required": [
+              "x",
+              "y",
+              "w",
+              "h"
+            ],
+            "properties": {
+              "x": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "w": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "h": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "severity": {
+            "enum": [
+              "minor",
+              "major",
+              "critical"
+            ]
+          }
+        }
+      }
+    },
+    "snippet_sha256s": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "description": "Parallel to detections \u2014 same length, same order."
+    },
+    "thumbnail_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lat": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lon": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "heading_deg": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "speed_mps": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "gps_accuracy_m": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "capture_mono_ns": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "device_boot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  }
+}
