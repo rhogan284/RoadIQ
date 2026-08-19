@@ -1,4 +1,4 @@
-.PHONY: install up down migrate test itest demo
+.PHONY: install up down migrate test itest fixtures demo
 
 # Editable-install .pth files can end up ignored by site.py (e.g. macOS marks
 # them UF_HIDDEN, or the working directory just isn't on sys.path). Setting
@@ -32,5 +32,8 @@ itest:
 	docker compose stop worker writer feedsim dashboard
 	uv run pytest -m integration -v
 
-demo:
+fixtures:
+	uv run python -m scripts.make_fixtures
+
+demo: fixtures
 	docker compose up --build
