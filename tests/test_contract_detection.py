@@ -60,3 +60,14 @@ def test_clean_frame_has_no_detections():
 def test_snippet_list_must_align_with_detections():
     with pytest.raises(ValueError, match="align"):
         _result(snippet_sha256s=[])
+
+def test_position_and_clock_fields_survive_json_roundtrip():
+    """Worker -> writer hop: if these are dropped in to_json/from_json, it
+    surfaces later as a wrong storage-and-upload-per-km figure and looks like
+    a capture bug rather than a serialisation bug."""
+    result = _result(
+        lat=-33.8688, lon=151.2093, heading_deg=275.5, speed_mps=16.7,
+        gps_accuracy_m=4.2, capture_mono_ns=1_000_000_000,
+        device_boot_id="22222222-2222-2222-2222-222222222222",
+    )
+    assert InferenceResult.from_json(result.to_json()) == result
