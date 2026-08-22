@@ -10,7 +10,85 @@ Component 3/4), domain locked to Option A — edge-first road assessment on the 
 Team: Ryan, Shervin, Ilana, Dexter, Joseph. Shervin owns model selection, training, and the
 accuracy/latency trade-off (ILC lane T3).
 
-## Setup
+## Docker setup (recommended for a fresh clone)
+Containerises the detector environment (Python, torch, opencv, YOLOX, NanoDet and all their
+install-time quirks below) so a fresh clone doesn't need to repeat the bare-metal setup at all.
+Files live under `docker_images/`; nothing here touches the root RoadIQ `docker-compose.yml` or
+`Dockerfile` — this is a separate, standalone Compose project.
+
+**Prerequisites:** Docker + Docker Compose (v2, i.e. `docker compose`, not the old `docker-compose`
+binary). No local Python/uv install needed for anything that runs inside the container.
+
+**What you must obtain separately before first run — this repo does not (and per `.gitignore`,
+should not) contain any of it:**
+- **Dataset:** [Kaggle — aliabdelmenam/rdd-2022](https://www.kaggle.com/datasets/aliabdelmenam/rdd-2022)
+  (CC BY-SA 4.0). Download `archive.zip` and place it at `data/RDD2022/archive.zip` (create the
+  `data/RDD2022/` folder if it doesn't exist yet). Nothing else under `data/` needs to exist yet —
+  `training/prepare_dataset.py` (run inside the container, see below) extracts/cleans/splits it.
+- **Model weights:** downloaded automatically the first time each plugin runs, from the links in
+  that plugin's own docstring under `detector_interface/plugins/` — e.g. `yolo11n.py` for
+  `weights/yolo11n/yolo11n.pt`. The one exception is `weights/yolo12s/yolo12s_rdd2022.pt` (the
+  [rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022)
+  Hugging Face checkpoint) — fetch that one by hand and place it at that exact path; there's no
+  auto-download for it today.
+- **NanoDet source** (`third_party/nanodet`): nothing to do — the Docker image fetches the exact
+  pinned commit itself at build time (see below). This is only a manual `git clone` step in the
+  bare-metal path further down this file.
+
+**Build and start:**
+```bash
+cd docker_images
+docker compose build      # ~a few minutes first time — torch alone is several hundred MB
+docker compose up -d
+```
+This builds one image containing all six detector plugins' dependencies (Python 3.13, CPU-only
+PyTorch, opencv, ultralytics, YOLOX from source, NanoDet at a pinned commit) and starts one
+persistent `detector` container in the background.
+
+**How the mounts work:** the container's `/app/data`, `/app/weights`, `/app/training/runs` and
+`/app/eval/results` are bind-mounted straight to this folder's `data/`, `weights/`,
+`training/runs/` and `eval/results/` — nothing written by a script running in the container is
+container-local; it lands directly in your working tree, and anything you place in those folders
+on the host is immediately visible inside the container too. Everything else (the actual code —
+`detector_interface/`, `eval/benchmark.py`, `training/*.py`, `examples/`) is baked into the image
+at build time, not mounted — see "Rebuild after changes" below for what that means in practice.
+`third_party/nanodet` is also baked in (a pinned commit, not your local clone — see the Dockerfile
+comment for why), so it does not need to exist on the host at all for the Docker path.
+
+**Run something:**
+```bash
+docker compose exec detector python examples/list_detectors.py
+docker compose exec detector python training/prepare_dataset.py
+docker compose exec detector python training/train_yolo11n.py
+docker compose exec detector python eval/benchmark.py --models yolo11n --limit 50
+docker compose exec detector bash          # interactive shell, for anything else
+```
+(No `PYTHONPATH=.` needed inside the container — the image sets `PYTHONPATH=/app` already.)
+
+**Stop the container(s)** — this leaves `data/`, `weights/`, `training/runs/` and `eval/results/`
+on your host filesystem exactly as they were, since those are bind mounts, not container storage:
+```bash
+docker compose stop     # or: docker compose down (without -v)
+```
+**Never run `docker compose down -v`** for this project — it would only remove container-local
+state (there isn't any persistent named volume here, so `-v` has nothing to do today, but don't
+add one later without checking this note first).
+
+**Rebuild after source or dependency changes:** editing `detector_interface/`, `eval/`,
+`training/`, `examples/`, or `requirements.txt` on the host does **not** change the running
+container — that code is `COPY`'d into the image at build time, not mounted. After such a change:
+```bash
+docker compose build
+docker compose up -d      # recreates the container from the new image
+```
+Weights, dataset and run outputs are untouched by a rebuild (they're bind mounts, not part of the
+image), so a rebuild never loses training progress.
+
+## Setup (bare metal / without Docker)
+The Docker path above is recommended for a fresh clone. This section is the original manual
+install, still the reference for exactly which pip commands the Docker image itself runs — and a
+fallback if you'd rather not use Docker.
+
 No dedicated venv for this project — a `.venv` created inside this folder fails on Windows
 (`WinError 206: filename too long`), because torch ships deeply nested license files and this
 project's own path (`...\Mountain of Flowers and Fruits\Application Studio B coding\.venv\...`)

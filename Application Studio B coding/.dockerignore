@@ -1,0 +1,19 @@
+# Build context is this directory (Application Studio B coding/), per
+# docker_images/docker-compose.yml's `build.context: ..`. Everything below is either large,
+# regenerable, or bind-mounted at runtime instead — see docker_images/docker-compose.yml and
+# README.md. Excluding it here keeps `docker build` from tarring gigabytes of dataset into the
+# build context on every build (this is about build context/time, not just final image size).
+data/
+weights/
+third_party/
+training/runs/
+eval/results/
+runs/
+
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

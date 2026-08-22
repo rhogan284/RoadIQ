@@ -1,0 +1,18 @@
+# Standalone from the root RoadIQ docker-compose.yml — no shared services, ports, volumes, or
+# networks with it, and it isn't touched by this file. Run from this directory or with
+# `docker compose -f "Application Studio B coding/docker_images/docker-compose.yml"`.
+services:
+  detector:
+    build:
+      context: ..
+      dockerfile: docker_images/Dockerfile
+    working_dir: /app
+    volumes:
+      # Bind-mounted, not baked into the image: large, host-owned, and either regenerable
+      # (data/ via training/prepare_dataset.py) or actively written to by training/benchmark runs
+      # (weights/, training/runs/, eval/results/). See README.md for what goes in each.
+      - ../data:/app/data
+      - ../weights:/app/weights
+      - ../training/runs:/app/training/runs
+      - ../eval/results:/app/eval/results
+    command: ["sleep", "infinity"]
