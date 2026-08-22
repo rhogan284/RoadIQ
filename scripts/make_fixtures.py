@@ -36,7 +36,7 @@ def generate(out_dir: Path, *, n_clean: int, n_defect: int, size: int = 256,
         img = _canvas(size, np_rng)
         path = out_dir / "clean" / f"clean_{i:04d}.png"
         cv2.imwrite(str(path), img)
-        manifest["clean"].append({"path": str(path)})
+        manifest["clean"].append({"path": path.as_posix()})
 
     for i in range(n_defect):
         img = _canvas(size, np_rng)
@@ -48,7 +48,7 @@ def generate(out_dir: Path, *, n_clean: int, n_defect: int, size: int = 256,
         path = out_dir / "defect" / f"defect_{i:04d}.png"
         cv2.imwrite(str(path), img)
         manifest["defect"].append(
-            {"path": str(path), "x": x, "y": y, "w": w, "h": h,
+            {"path": path.as_posix(), "x": x, "y": y, "w": w, "h": h,
              "defect_class": "pothole"}
         )
 
