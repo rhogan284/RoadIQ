@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://application-studio-b/detection.schema.json",
+  "title": "Detection",
+  "description": "One detected road-damage instance, as returned by DetectorPlugin.detect(). Mirrors detector_interface/detection.py — Contract 2, owned by Shervin.",
+  "type": "object",
+  "properties": {
+    "class_id": { "type": "integer", "description": "RDD2022 class index." },
+    "class_name": { "type": "string", "description": "e.g. D00 (longitudinal crack), D10 (transverse crack), D20 (alligator crack), D40 (pothole)." },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "bbox_x": { "type": "number", "description": "Top-left x, pixels." },
+    "bbox_y": { "type": "number", "description": "Top-left y, pixels." },
+    "bbox_w": { "type": "number", "description": "Box width, pixels." },
+    "bbox_h": { "type": "number", "description": "Box height, pixels." },
+    "model_name": { "type": "string", "description": "e.g. yolox-tiny, yolov4-tiny, yolox-nano, yolo11n, nanodet-m." },
+    "model_version": { "type": "string", "description": "Weights/checkpoint version or tag." }
+  },
+  "required": [
+    "class_id",
+    "class_name",
+    "confidence",
+    "bbox_x",
+    "bbox_y",
+    "bbox_w",
+    "bbox_h",
+    "model_name",
+    "model_version"
+  ],
+  "additionalProperties": false
+}

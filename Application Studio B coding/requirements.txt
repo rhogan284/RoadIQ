@@ -1,0 +1,19 @@
+torch==2.13.0
+ultralytics==8.4.121
+# must stay below 5.0 — OpenCV 5.x removed cv2.dnn.readNetFromDarknet, which the
+# YOLOv4-tiny plugin needs to load the official .cfg/.weights files
+opencv-python<5,>=4.14.0
+numpy==2.5.1
+PyYAML==6.0.3
+
+# yolox-tiny / yolox-nano plugins. The `yolox` PyPI package itself is broken (sdist missing
+# requirements.txt) — install it from GitHub instead, see README Setup:
+#   pip install cmake  (only needed to build onnx, a yolox dep, from source)
+#   pip install loguru tabulate thop ninja tqdm tensorboard pycocotools
+#   pip install --no-build-isolation --no-deps git+https://github.com/Megvii-BaseDetection/YOLOX.git
+
+# nanodet-m plugin. No usable PyPI/GitHub-installable package (see plugins/nanodet_m.py
+# docstring) — vendored as a git clone instead, see README Setup:
+#   git clone --depth 1 https://github.com/RangiLyu/nanodet.git third_party/nanodet
+pytorch_lightning
+termcolor
