@@ -76,7 +76,18 @@ RUN curl -fsSL \
     && rm /tmp/nanodet.tar.gz
 # nanodet's own utils import both of these; requirements.txt doesn't pin exact versions since
 # they're only needed for this one plugin (matches the host's own Setup instructions).
-RUN pip install --no-cache-dir pytorch_lightning termcolor
+#
+# pytorch_lightning pinned <2.0.0 — third_party/nanodet/requirements.txt itself pins
+# `pytorch-lightning>=1.9.0,<2.0.0`, but an unpinned `pip install pytorch_lightning` resolves the
+# latest (2.6.5 as of 2026-08-23) regardless. PL 2.0 removed the `training_epoch_end` hook
+# nanodet's TrainingTask relies on — training crashes immediately with a NotImplementedError on
+# the unpinned version. Confirmed by actually hitting this on the host and fixing it there first.
+#
+# imagesize: nanodet/data/dataset/yolo.py (the built-in YOLO-format dataset loader,
+# training/train_nanodet_m.py's route to fine-tuning this model) imports it directly, but it's
+# not pulled in by anything else — missing on the host until training/train_nanodet_m.py was
+# first written and run, and not listed in nanodet's own requirements.txt either.
+RUN pip install --no-cache-dir "pytorch_lightning<2.0.0" termcolor imagesize
 
 COPY detector_interface/ ./detector_interface/
 COPY eval/benchmark.py ./eval/benchmark.py

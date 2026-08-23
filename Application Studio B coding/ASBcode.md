@@ -22,14 +22,15 @@ benchmarking the accuracy/latency trade-off (`eval/benchmark.py`).
 ## Model status (as of 2026-08-22)
 | Model | Real inference? | Fine-tuned on RDD2022? |
 |---|---|---|
-| YOLO11n | Yes | Not yet — `training/train_yolo11n.py` exists but hasn't been run to completion |
-| YOLO12s | Yes | Yes — base checkpoint from [rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022) (HF, MIT weights), already fine-tuned by a third party. `training/train_yolo12s.py` continues fine-tuning that checkpoint on our own subset (in progress as of this writing) — output lands at `weights/yolo12s/yolo12s_rdd2022_continued.pt`, which the plugin prefers automatically once it exists |
+| YOLO11n | Yes | Yes — trained from base COCO weights, 15 epochs, output at `weights/yolo11n/yolo11n_rdd2022.pt` |
+| YOLO12s | Yes | Yes — base checkpoint from [rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022) (HF, MIT weights), already fine-tuned by a third party. `training/train_yolo12s.py` continued fine-tuning that checkpoint on our own subset — output at `weights/yolo12s/yolo12s_rdd2022_continued.pt`, which the plugin prefers automatically |
 | YOLOv4-tiny | Yes (`cv2.dnn`) | No — blocked, needs the darknet C/CUDA toolchain, not installed |
-| YOLOX-Tiny / YOLOX-Nano | Yes | No — no training script written yet |
-| NanoDet-m | Yes | No — no training script written yet |
+| YOLOX-Tiny / YOLOX-Nano | Yes | No — a fine-tuning attempt was abandoned: the pip-installed `yolox` package's own trainer hardcodes CUDA (`torch.cuda.set_device(...)` unconditionally), and `tools/train.py` isn't even included in the pip package, only the full GitHub repo. Would need a from-scratch CPU training loop, same category of work NanoDet-m's `train_nanodet_m.py` ended up needing but deeper — not attempted. |
+| NanoDet-m | Yes | Yes — trained from base COCO weights, 15 epochs, output at `weights/nanodet_m/nanodet_m_rdd2022.ckpt` |
 
-Only YOLO12s currently has non-zero measured accuracy against RDD2022; everything else is either
-mid-training or still COCO-pretrained-only (reads ~0% mAP on RDD2022 until fine-tuned).
+YOLO12s, YOLO11n, and NanoDet-m all have real measured accuracy against RDD2022 now (see results
+sections below) — YOLO12s is clearly ahead on every metric, NanoDet-m is behind both on every
+metric. YOLOv4-tiny is still COCO-pretrained-only (reads ~0% mAP on RDD2022 until fine-tuned).
 
 ## Setup gotchas (all Windows-specific — see "Moving to Docker" below, most of this may not
 apply on Linux)
@@ -53,9 +54,18 @@ apply on Linux)
   from any built wheel (confirmed empirically). Vendored as a plain git clone instead:
   `git clone --depth 1 https://github.com/RangiLyu/nanodet.git third_party/nanodet`, imported via
   `sys.path` insertion in `plugins/nanodet_m.py` (works because Python 3 namespace packages don't
-  need `__init__.py`). Also needs `pip install pytorch_lightning termcolor`, and the plugin
-  monkey-patches a `torch._six` shim at runtime (removed from modern torch; nanodet's
-  `collate.py` still imports from it at module level).
+  need `__init__.py`). Also needs `pip install "pytorch_lightning<2.0.0" termcolor imagesize`
+  (**must** stay pinned below 2.0.0 — `third_party/nanodet/requirements.txt` itself pins
+  `<2.0.0`, but an unpinned install resolves the latest release and its removed
+  `training_epoch_end` hook crashes NanoDet's trainer immediately; `imagesize` is needed by the
+  training-only `YoloDataset` loader, easy to miss since inference never imports it), and the
+  plugin monkey-patches a `torch._six` shim at runtime (removed from modern torch; nanodet's
+  `collate.py` still imports from it at module level). `training/train_nanodet_m.py` and
+  `test_nanodet_m.py` patch three more CPU/library-version bugs in the vendored `tools/train.py`
+  from the outside (missing `map_location="cpu"` on checkpoint load, two `pytorch_lightning`
+  `Trainer` kwargs that changed meaning between versions, and a validation-only log line that
+  assumes an optimizer exists) — see those scripts' module docstrings, nothing further needed to
+  run them.
 - Full detail/reasoning for both of the above is in the docstrings at the top of
   `detector_interface/plugins/yolox_tiny.py` and `plugins/nanodet_m.py`.
 
@@ -117,31 +127,118 @@ Two findings worth keeping for the report/R-S2b writeup:
    early on. `best.pt` (what actually got copied to the `_continued.pt` file) is epoch 1's
    checkpoint, not epoch 6's.
 
-## Moving to Docker / a new GitHub repo (planned, not yet done)
-Plan: move this folder into its own repo, containerize it, teammates use it via Docker instead of
-each repeating today's manual install saga. Notes for whoever does this:
-- Most of the Windows-specific pain above (MAX_PATH, the no-venv workaround) doesn't apply on
-  Linux — a normal `venv` inside a Docker image should just work.
-- Consider pinning an **older Python** (e.g. 3.11/3.12) in the Docker image instead of 3.13 —
-  the `cmake`-to-build-`onnx`-from-source step exists specifically because no prebuilt `onnx`
-  wheel exists yet for 3.13. An older Python likely has one and skips that step entirely.
-- Don't bake `archive.zip` / the extracted dataset into the image — mount as a volume or keep it
-  a documented download step.
-- Weights (~100MB total) are small enough to commit or fetch via a small download script —
-  prefer a script (not yet written) over shipping raw binaries, keeps the repo light.
-- `third_party/nanodet` should be a Dockerfile `git clone` step, not a copied folder (avoids
-  vendoring its `.git` history into your own repo).
-- **Open design question, not yet decided**: is this meant to be imported as a Python package
-  directly inside Ryan's pipeline code (matches the original Contract 2 framing — "so Ryan can
-  code the pipeline against a stub"), or served as a standalone model API other team members'
-  code calls over the network? Changes the Docker architecture significantly — settle this with
-  the team before building the Dockerfile.
+## YOLO11n fine-tune — completed, results (2026-08-23)
+Trained from base COCO weights (not a pre-fine-tuned checkpoint like YOLO12s), 2000 train / 400
+val_small, imgsz=256, batch=8, `patience=5`. Ran the **full 15 epochs** without early-stopping —
+`metrics/mAP50(B)` climbed steadily the whole way (0.011 → 0.133 on val_small), unlike YOLO12s
+which peaked at epoch 1. Per-epoch time ≈ 5:38 train + 1:12 val ≈ 6:50, matching the ~40min
+(early-stop) to ~1hr45 (full run) prediction — landed at the full-run end. Final test-set eval
+(5,758 images) added ~15-20min more (linear-scaled from the 400-image val time), CPU inference
+speed **33.9ms/image (~29.5 img/sec)**. Weights at `weights/yolo11n/yolo11n_rdd2022.pt`.
+
+**Test-set (5,758 images): mAP50 = 0.1264, mAP50-95 = 0.0504, precision = 0.2219, recall =
+0.2023.** Per-class mAP50: other corruption 0.248, alligator crack 0.165, longitudinal crack
+0.096, transverse crack 0.090, pothole 0.033.
+
+**YOLO11n vs YOLO12s comparison** — YOLO12s wins on every metric (~2x mAP50, ~2.4x mAP50-95,
+~1.7x precision, ~1.6x recall), expected given it started from a checkpoint already fine-tuned
+on RDD2022 by a third party and has ~3.5x the params (9M vs 2.6M). More interesting: **the
+per-class ranking flips**. YOLO12s's best class is alligator crack (0.448) and worst is other
+corruption (0.110); YOLO11n's best is other corruption (0.248) and worst is pothole (0.033).
+This lines up with the class-remapping caveat already documented in `plugins/yolo12s.py` — the
+"other corruption" and "pothole" output slots got relabeled during YOLO12s's continued
+fine-tune and never fully recovered in only 6 epochs, specifically hurting those two classes for
+that model. YOLO11n trained fresh has no such handicap, so "other corruption" tops its table
+instead. Pothole is the weakest class for *both* models regardless — likely a genuinely harder/
+rarer class, not a training artifact.
+
+Note: `eval/results/benchmark_results.json` is stale (pre-fine-tuning, imgsz=640 not 256, and
+its `weights_path` still points at the old OneDrive copy from the two-copies incident above)
+— don't read speed/accuracy numbers from it, it predates both models' real fine-tunes.
+
+## NanoDet-m fine-tune — completed, results (2026-08-23)
+Trained from base COCO weights via `training/train_nanodet_m.py`, which drives NanoDet's own
+vendored `tools/train.py` programmatically (`pytorch_lightning` Trainer under the hood) rather
+than a hand-written loop — same 2000 train / 400 val_small, imgsz=256, batch=8 convention as the
+other two, but **no early-stop/patience mechanism** (would have needed patching NanoDet's
+vendored trainer, skipped to keep the first run lower-risk), so it always runs the full 15
+epochs. An earlier fine-tuning attempt on YOLOX-Tiny was abandoned first — see the model status
+table above — before landing on NanoDet-m as the next model to train.
+
+Per-epoch time was inconsistent, tracked live via the timestamp prefix on each log line:
+7, 11, 10, 10, 10, 6, 9, 7, 11, 9, 7, [13 combined over 2 epochs], 5 min — averaging **~9
+min/epoch**, total wall time **~2hrs**. The variance (unlike YOLO11n/YOLO12s's steadier timing)
+is most likely Docker Desktop running in the background competing for CPU, not a NanoDet-specific
+issue — it was started partway through this session to build the `docker_images/` image.
+
+Best checkpoint per NanoDet's own tracking (only logs a new line when validation improves) was
+**epoch 13**, not epoch 15 — validation mAP on val_small got *worse* over the last 2 epochs
+(0.0277 at epoch 13 → 0.0239 at epoch 15). `nanodet_model_best.pth` (epoch 13's weights) is what
+`train_nanodet_m.py` copies to `weights/nanodet_m/nanodet_m_rdd2022.ckpt`, not the last epoch —
+same "best checkpoint isn't the last one" pattern YOLO12s hit.
+
+`train_nanodet_m.py` only ever validates against val_small (400 images) — getting a number
+comparable to YOLO11n/YOLO12s needed a separate script, `training/test_nanodet_m.py`, written
+after training finished. It reuses NanoDet's own `TrainingTask` + `CocoDetectionEvaluator` via
+`pytorch_lightning`'s `Trainer.validate()` rather than reimplementing scoring by hand, pointed at
+the full test split with the fine-tuned checkpoint loaded instead of the base COCO one. Needed
+two more from-outside patches beyond `train_nanodet_m.py`'s three (wrong Lightning logger class
+for `Trainer.validate()`; a per-batch log line that assumes `trainer.optimizers` is non-empty,
+which is only true when training via `.fit()`) — all in that script's own docstring/comments.
+
+**Test-set (5,758 images), from `test_nanodet_m.py`: mAP50 = 0.1005, mAP50-95 = 0.0374, AP75 =
+0.0218.** Speed: 720 batches (8/batch) in 5:13 → **54.4ms/image (~18.4 img/sec)**. Per-class
+mAP50: other corruption 0.183, alligator crack 0.172, longitudinal crack 0.078, transverse crack
+0.060, pothole 0.011 (weakest, consistent with every other model so far). NanoDet doesn't report
+single-number precision/recall the way Ultralytics does — it gives COCO-style Average Recall at
+several maxDets instead (AR@100 = 0.209 is the loosest analog), so that row isn't directly
+comparable across all three models; mAP50/mAP50-95 are, since both tools compute those the same
+way.
+
+**Three-way comparison (all on the same full 5,758-image test set now):**
+| Model | mAP50 | mAP50-95 | Speed |
+|---|---|---|---|
+| YOLO12s | 0.263 | 0.122 | not measured |
+| YOLO11n | 0.126 | 0.050 | 33.9ms/img (~29.5 img/s) |
+| NanoDet-m | 0.101 | 0.037 | 54.4ms/img (~18.4 img/s) |
+
+**NanoDet-m is last on both accuracy and speed** — worth a sentence in the report specifically
+because it's counterintuitive: it's by far the smallest model (0.95M params vs YOLO11n's 2.6M,
+YOLO12s's 9M) but the *slowest* measured here, not the fastest. Not about raw FLOPs — framework
+overhead: NanoDet's eval runs through `pytorch_lightning`'s loop plus its own Python-level
+post-processing, versus Ultralytics' more heavily optimized inference path. Smaller param count
+didn't translate to either better accuracy or faster wall-clock time in this setup. Accuracy-wise,
+plausible given it started from a plain COCO checkpoint (same as YOLO11n) but has ~2.7x fewer
+params to work with.
+
+## Docker (done — this section used to say "planned, not yet done", it's stale no longer)
+`docker_images/` (Dockerfile + docker-compose.yml, standalone from the root RoadIQ compose
+stack — see this folder's own `README.md`) now containerizes the whole detector environment;
+`docker compose build` gets a teammate a working setup without repeating the manual install saga
+above. Built and confirmed working 2026-08-23 — the Dockerfile's own `pip install
+pytorch_lightning termcolor` line had the exact same unpinned-version bug flagged in the NanoDet-m
+setup gotcha above (would've hit every teammate who built it fresh), fixed there too so it's not
+just documented here but actually prevented at build time.
+- Still true: a normal Linux `venv` inside the image sidesteps the Windows-specific MAX_PATH/
+  no-venv pain above entirely.
+- **Still an open design question, not yet decided**: is this meant to be imported as a Python
+  package directly inside Ryan's pipeline code (matches the original Contract 2 framing — "so
+  Ryan can code the pipeline against a stub"), or served as a standalone model API other team
+  members' code calls over the network? The current `docker_images/docker-compose.yml` doesn't
+  answer this either way (just a persistent `sleep infinity` container you `exec` into) — settle
+  with the team before assuming either direction for a real deployment.
 
 ## Open TODOs
-- [ ] Finish YOLO12s continued fine-tune (in progress).
-- [ ] Run `training/train_yolo11n.py` (dataset now prepped as of whenever `prepare_dataset.py`
-      last completed — check `data/RDD2022/clean/train/images` isn't empty before assuming so).
-- [ ] No training script exists yet for YOLOv4-tiny (blocked on darknet toolchain), YOLOX-Tiny/
-      Nano, or NanoDet-m — would need to be written if the team wants fine-tuned numbers for
-      those too, not just COCO-pretrained speed data points.
-- [ ] Docker/repo move — see above, architecture question unresolved.
+- [x] Finish YOLO12s continued fine-tune — done 2026-08-22, see results above.
+- [x] Run `training/train_yolo11n.py` — done 2026-08-23, see results above.
+- [x] Train NanoDet-m — done 2026-08-23 (`training/train_nanodet_m.py` +
+      `training/test_nanodet_m.py` for the full-test-set number), see results above.
+- [ ] No training script exists yet for YOLOv4-tiny (blocked on darknet toolchain) or YOLOX-Tiny/
+      Nano (attempted for YOLOX, abandoned — see model status table) — would need real work if
+      the team wants fine-tuned numbers for those too, not just COCO-pretrained speed data points.
+- [ ] `eval/results/benchmark_results.json` is stale (pre-fine-tuning) — re-run
+      `eval/benchmark.py` against all three fine-tuned checkpoints for a real accuracy+speed
+      comparison on equal footing (same imgsz, same image set); would also finally give YOLO12s
+      a measured speed number, the one still missing from the three-way comparison above.
+- [ ] Docker repo move (splitting this folder into its own repo) — separate from the
+      containerization itself, which is done (see Docker section above).

@@ -26,6 +26,11 @@ third_party/nanodet/
 # regenerable by re-running the relevant training script.
 training/runs/
 
+# NanoDet configs generated fresh at runtime by train_nanodet_m.py / test_nanodet_m.py (absolute
+# paths baked in, same reasoning as data.yaml above) — not meant to be hand-edited or committed.
+training/nanodet_m_rdd2022.generated.yml
+training/nanodet_m_rdd2022_test.generated.yml
+
 # Python
 __pycache__/
 *.pyc

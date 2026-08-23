@@ -121,10 +121,25 @@ pip install --no-build-isolation --no-deps git+https://github.com/Megvii-BaseDet
 # NanoDet-m — no usable pip package at all (upstream repo bug drops nanodet/model and
 # nanodet/data from any built wheel), so it's vendored as a plain git clone instead:
 git clone --depth 1 https://github.com/RangiLyu/nanodet.git third_party/nanodet
-pip install pytorch_lightning termcolor
+pip install "pytorch_lightning<2.0.0" termcolor imagesize
 ```
+`pytorch_lightning` **must** stay pinned below 2.0.0 — `third_party/nanodet/requirements.txt`
+itself pins `pytorch-lightning>=1.9.0,<2.0.0`, but a plain unpinned `pip install pytorch_lightning`
+resolves the latest release regardless (2.6.5 as of 2026-08-23). PL 2.0 removed the
+`training_epoch_end` hook NanoDet's `TrainingTask` relies on, so training crashes immediately
+with a `NotImplementedError` on an unpinned install — training/train_nanodet_m.py won't run
+without this pin. `imagesize` is needed by NanoDet's built-in `YoloDataset` loader
+(`nanodet/data/dataset/yolo.py`), used only for training, not inference — easy to miss since it's
+never imported by the detection plugin itself. The Docker image (see above) already has both of
+these pinned correctly, so this only matters for the bare-metal path.
+
 See the docstrings in `detector_interface/plugins/yolox_tiny.py` and `plugins/nanodet_m.py`
-for exactly why each of these steps is needed.
+for exactly why each of these steps is needed, and `training/train_nanodet_m.py`'s module
+docstring for two further CPU/library-version bugs in NanoDet's vendored `tools/train.py`
+(a missing `map_location="cpu"` on checkpoint load, and two `pytorch_lightning` Trainer kwargs
+that changed meaning between versions) — that script patches around both from the outside rather
+than editing the vendored file, so nothing further is needed to run it, just worth knowing about
+if `tools/train.py` is ever invoked directly instead.
 
 CPU-only is assumed throughout (no CUDA on this machine) — training scripts default to
 `device="cpu"` and small image sizes/epoch counts accordingly.
