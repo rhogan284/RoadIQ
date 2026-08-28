@@ -1,0 +1,61 @@
+{
+  "yolox-tiny": {
+    "error": "YOLOX-Tiny inference not yet wired up"
+  },
+  "yolox-nano": {
+    "error": "YOLOX-Nano inference not yet wired up"
+  },
+  "yolov4-tiny": {
+    "num_images": 500,
+    "avg_ms_per_image": 51.794601002435584,
+    "images_per_sec": 19.307031633528293,
+    "params": {
+      "input_size": 416,
+      "size_mb": 23.1,
+      "bflops": 6.9,
+      "published_map_at_0.5": 40.2,
+      "license": "YOLO License (permissive)",
+      "cfg_path": "C:\\Users\\sherv\\OneDrive\\Desktop\\Mountain of Flowers and Fruits\\Application Studio B coding\\weights\\yolov4_tiny\\yolov4-tiny.cfg",
+      "weights_path": "C:\\Users\\sherv\\OneDrive\\Desktop\\Mountain of Flowers and Fruits\\Application Studio B coding\\weights\\yolov4_tiny\\yolov4-tiny.weights",
+      "fine_tuned_on_rdd2022": false,
+      "accuracy_caveat": "COCO-pretrained only \u2014 expect ~0% accuracy on RDD2022 classes until fine-tuned via the darknet toolchain."
+    },
+    "version": "darknet_yolo_v4_pre-coco-pretrained",
+    "map50": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "per_class_ap50": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0,
+      "3": 0.0,
+      "4": 0.0
+    }
+  },
+  "yolo11n": {
+    "num_images": 500,
+    "avg_ms_per_image": 94.56214689293164,
+    "images_per_sec": 10.57505601191832,
+    "params": {
+      "input_size": 640,
+      "license": "AGPL-3.0",
+      "license_warning": "Flagged in R-S3 \u2014 AGPL conflicts with a self-hostable/reusable product pitch.",
+      "weights_path": "C:\\Users\\sherv\\OneDrive\\Desktop\\Mountain of Flowers and Fruits\\Application Studio B coding\\weights\\yolo11n\\yolo11n.pt",
+      "fine_tuned_on_rdd2022": false
+    },
+    "version": "v8.3.0-coco-pretrained",
+    "map50": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "per_class_ap50": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0,
+      "3": 0.0,
+      "4": 0.0
+    }
+  },
+  "nanodet-m": {
+    "error": "NanoDet-m inference not yet wired up"
+  }
+}

@@ -1,0 +1,35 @@
+# Dataset — 10.6GB archive plus its extracted/cleaned output. Documented as a download step in
+# README.md instead (Kaggle aliabdelmenam/rdd-2022). Also covers data.yaml/data_fast.yaml —
+# prepare_dataset.py writes these with a machine-specific absolute path baked in (that's exactly
+# what caused the stale-data bug this project already hit once — see ASBcode.md), so they should
+# never be committed, only regenerated locally.
+data/RDD2022/archive.zip
+data/RDD2022/download.log
+data/RDD2022/extracted/
+data/RDD2022/clean/
+data/RDD2022/data.yaml
+data/RDD2022/data_fast.yaml
+
+# Model weights — all downloaded or trained locally, not authored. Re-fetch/re-train per
+# README.md rather than committing binaries.
+weights/**/*.pt
+weights/**/*.pth
+weights/**/*.weights
+weights/**/*.ckpt
+weights/nanodet_m/_load_logs/
+
+# Vendored NanoDet source (see plugins/nanodet_m.py for why it's a clone, not a pip install) —
+# re-clone per README.md rather than committing someone else's repo (with its own .git) into ours.
+third_party/nanodet/
+
+# Training run artifacts (checkpoints-in-progress, sample batch images, per-epoch logs) —
+# regenerable by re-running the relevant training script.
+training/runs/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS junk
+.DS_Store
+Thumbs.db

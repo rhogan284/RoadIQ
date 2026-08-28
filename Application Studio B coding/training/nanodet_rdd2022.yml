@@ -1,0 +1,111 @@
+#Config File example
+# Adapted from third_party/nanodet/config/legacy_v0.x_configs/nanodet-m.yml for our 5-class
+# RDD2022 setup (num_classes 80 -> 5, class_names -> RDD2022_CLASS_NAMES, COCO dataset ->
+# YoloDataset pointed at our cleaned split, schedule.load_model -> the pretrained COCO ckpt so
+# training starts from it rather than from scratch). See train_nanodet_m.py for how this is
+# invoked and an important caveat about dataset layout that must be resolved before this config
+# can actually run.
+# All paths below are relative to the project root (train_nanodet_m.py runs this with that as cwd).
+save_dir: training/runs/nanodet_m_rdd2022
+model:
+  arch:
+    name: OneStageDetector
+    backbone:
+      name: ShuffleNetV2
+      model_size: 1.0x
+      out_stages: [2,3,4]
+      activation: LeakyReLU
+    fpn:
+      name: PAN
+      in_channels: [116, 232, 464]
+      out_channels: 96
+      start_level: 0
+      num_outs: 3
+    head:
+      name: NanoDetHead
+      num_classes: 5
+      input_channel: 96
+      feat_channels: 96
+      stacked_convs: 2
+      share_cls_reg: True
+      octave_base_scale: 5
+      scales_per_octave: 1
+      strides: [8, 16, 32]
+      reg_max: 7
+      norm_cfg:
+        type: BN
+      loss:
+        loss_qfl:
+          name: QualityFocalLoss
+          use_sigmoid: True
+          beta: 2.0
+          loss_weight: 1.0
+        loss_dfl:
+          name: DistributionFocalLoss
+          loss_weight: 0.25
+        loss_bbox:
+          name: GIoULoss
+          loss_weight: 2.0
+data:
+  train:
+    name: YoloDataset
+    class_names: &class_names ['longitudinal crack', 'transverse crack', 'alligator crack', 'other corruption', 'pothole']
+    # NanoDet's YoloDataset needs each label .txt's matching image in the SAME directory as
+    # ann_path (see train_nanodet_m.py's docstring) — points at the flattened copy
+    # train_nanodet_m.py builds from prepare_dataset.py's separate images/+labels/ dirs, not at
+    # data/RDD2022/clean/ directly.
+    img_path: data/RDD2022/nanodet_flat/train
+    ann_path: data/RDD2022/nanodet_flat/train
+    input_size: [320,320] #[w,h]
+    keep_ratio: True
+    pipeline:
+      perspective: 0.0
+      scale: [0.6, 1.4]
+      stretch: [[1, 1], [1, 1]]
+      rotation: 0
+      shear: 0
+      translate: 0.2
+      flip: 0.5
+      brightness: 0.2
+      contrast: [0.6, 1.4]
+      saturation: [0.5, 1.2]
+      normalize: [[103.53, 116.28, 123.675], [57.375, 57.12, 58.395]]
+  val:
+    name: YoloDataset
+    class_names: *class_names
+    img_path: data/RDD2022/nanodet_flat/val_small
+    ann_path: data/RDD2022/nanodet_flat/val_small
+    input_size: [320,320] #[w,h]
+    keep_ratio: True
+    pipeline:
+      normalize: [[103.53, 116.28, 123.675], [57.375, 57.12, 58.395]]
+device:
+  gpu_ids: -1  # CPU-only, matching the other training scripts in this project
+  workers_per_gpu: 4
+  batchsize_per_gpu: 8
+  precision: 32
+schedule:
+  load_model: weights/nanodet_m/nanodet_m.ckpt
+  optimizer:
+    name: SGD
+    lr: 0.01  # lowered from the original 0.14 (which assumed batchsize_per_gpu=192) for our batch=8
+    momentum: 0.9
+    weight_decay: 0.0001
+  warmup:
+    name: linear
+    steps: 100
+    ratio: 0.1
+  total_epochs: 15  # matches the other training scripts' epoch budget, not nanodet's original 280
+  lr_schedule:
+    name: MultiStepLR
+    milestones: [10,13]
+    gamma: 0.1
+  val_intervals: 1
+evaluator:
+  name: CocoDetectionEvaluator
+  save_key: mAP
+
+log:
+  interval: 10
+
+class_names: *class_names

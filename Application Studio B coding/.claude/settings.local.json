@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "canvas"
+  ],
+  "enableAllProjectMcpServers": true
+}
