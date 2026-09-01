@@ -40,8 +40,11 @@ CLASS_NAMES = [
     "other corruption",
     "pothole",
 ]
-MAX_TRAIN_IMAGES = 4000  # CPU-feasible subset; full train split is ~26,900 images. Raised from
-# 2000 2026-08-28 for a longer YOLO12s improvement run — see ASBcode.md's 2026-08-28 entry.
+MAX_TRAIN_IMAGES = 8000  # CPU-feasible subset; full train split is ~26,900 images. Raised from
+# 2000 2026-08-28 for a longer YOLO12s improvement run (see ASBcode.md's 2026-08-28 entry), then
+# 4000->8000 2026-08-30 after YOLO12s v3 (imgsz=416) early-stopped well before its epoch ceiling —
+# evidence pointed at training-set size, not epoch count, as the bottleneck. See modelresults.md's
+# "YOLO12s v3" entry.
 VAL_SUBSET_SIZE = 400  # separate small val slice for per-epoch training checks — see data_fast.yaml
 # below. Was wrongly left at 5758 (the FULL val set) before 2026-08-28 — that defeated the whole
 # point of val_small (fast per-epoch checks) and would have made every epoch as slow as the final

@@ -19,11 +19,11 @@ as things change rather than letting it go stale. Not auto-loaded like `CLAUDE.m
 swap detectors without changing its own code, plus one adapter per model under `plugins/` for
 benchmarking the accuracy/latency trade-off (`eval/benchmark.py`).
 
-## Model status (as of 2026-08-28 — real training run completed this session, see `modelresults.md`)
+## Model status (as of 2026-09-01 — YOLO12s v4 completed, see `modelresults.md`)
 | Model | Real inference? | Fine-tuned on RDD2022? |
 |---|---|---|
 | YOLO11n | Yes | Yes — full 15-epoch run completed 2026-08-28. Test-set (5758 images): mAP50=0.1012, mAP50-95=0.0408, precision=0.1867, recall=0.1847 |
-| YOLO12s | Yes | Yes — continued fine-tune from [rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022) completed 2026-08-28, AdamW lr0=0.001. **Best of the 4 real runs, wins on every metric**: mAP50=0.3256, mAP50-95=0.1467, precision=0.4468, recall=0.3570. Output at `weights/yolo12s/yolo12s_rdd2022_continued.pt` |
+| YOLO12s | Yes | Yes — continued fine-tune from [rezzzq/yolo12s-road-damage-rdd2022](https://huggingface.co/rezzzq/yolo12s-road-damage-rdd2022), latest run (v4, imgsz=416, MAX_TRAIN_IMAGES=8000) completed 2026-09-01, AdamW lr0=0.001. **Best of all real runs, wins on every metric**: mAP50=0.5362, mAP50-95=0.2701, precision=0.6160, recall=0.5244. Output at `weights/yolo12s/yolo12s_rdd2022_continued.pt` — see `modelresults.md`'s "YOLO12s v4" entry |
 | YOLOv4-tiny | Yes (`cv2.dnn`) | No — blocked, needs the darknet C/CUDA toolchain, not installed |
 | YOLOX-Tiny / YOLOX-Nano | Yes | No — no training script written yet |
 | NanoDet-m | Yes | **Attempted 2026-08-28, failed**: `ModuleNotFoundError: No module named 'nanodet'` — `training/train_nanodet_m.py`'s subprocess call never adds `third_party/nanodet` to the child process's `sys.path`/`PYTHONPATH` (the inference plugin does this manually; the training wrapper doesn't). Dataset-layout flattening step itself worked fine (2000 train + 400 val pairs). Fix: pass `env={**os.environ, "PYTHONPATH": str(REPO_DIR)}` to the `subprocess.run()` call. Not fixed yet — skipped per instruction to move on from failures rather than debug them mid-run |
@@ -73,9 +73,12 @@ apply on Linux)
 **don't commit this or the extracted/cleaned splits to git**, it's a documented download step
 (see README). `training/prepare_dataset.py` extracts/cleans/dedupes it into
 `data/RDD2022/clean/{train,val,test}` and writes `data/RDD2022/data.yaml`.
-`MAX_TRAIN_IMAGES` (in `prepare_dataset.py`) is currently **2000** (down from the original 4000
-default) and `imgsz` in both training scripts is **256** (down from 416) — both lowered
-2026-08-22 to keep CPU training time down.
+`MAX_TRAIN_IMAGES` (in `prepare_dataset.py`) started at **2000** (down from the original 4000
+default, lowered 2026-08-22 to keep CPU training time down), then raised back to **4000**
+2026-08-28 for YOLO12s's v2 improvement run — applies to whichever model is trained next, since
+it's shared by all four training scripts. `imgsz` was similarly lowered to 256 in all four
+scripts 2026-08-22, but as of 2026-08-30 **only `train_yolo12s.py` has been raised back to 416**
+— YOLO11n/nsr51324/cvtechniques are still at 256 (untouched, not part of that change).
 
 ## ⚠️ There were briefly two copies of this project on disk (resolved 2026-08-22)
 `Desktop\...\Application Studio B coding` (this one — where all real work happens) and a second,
@@ -107,14 +110,60 @@ from it. Two real fixes went in before the restart, both in `training/prepare_da
 Total wall time ≈ 71 min training + final test-set eval — well under the ~2.5-3hr worst case.
 
 ## YOLO12s continued fine-tune — results
-**Current (2026-08-28), the numbers that matter now:** ran the full 15 epochs (4.49 hours,
-`patience=5` never triggered this time — plausibly because this run used the lower pinned
-`lr0=0.001` added 2026-08-27, vs. whatever `optimizer="auto"` picked for the deleted 2026-08-22
-run below; a slower-improving loss curve is less likely to look "plateaued" to the early-stop
-check). Weights at `weights/yolo12s/yolo12s_rdd2022_continued.pt`, plugin picks it up
-automatically (`version: rdd2022-continued-ours`). Test-set (5,758 images): **mAP50 = 0.3256,
-mAP50-95 = 0.1467, precision = 0.4468, recall = 0.3570** — best of all 5 models attempted this
-session, see `modelresults.md` for the full comparison table.
+**Current (2026-09-01) — v4, the numbers that matter now:** direct follow-through on v3's own
+conclusion below — raised `MAX_TRAIN_IMAGES` 4000→8000 in `prepare_dataset.py` (re-ran it first;
+the full re-scan/re-hash of ~38,400 source images took ~30+ min on its own), everything else
+identical to v3 (`imgsz=416`, `epochs=25` ceiling, `batch=16`, AdamW lr0=0.001/momentum=0.9,
+`patience=5`). **Ran the full 25 epochs, no early stop** — unlike v3, which plateaued and
+early-stopped at epoch 15; with double the data the model kept improving epoch-to-epoch instead.
+Test-set (5,758 images): **mAP50 = 0.5362, mAP50-95 = 0.2701, precision = 0.6160, recall =
+0.5244** — a clear gain over v3 on every metric (+29% mAP50, +38% mAP50-95, +20% precision,
++20% recall), confirming the "training-set size was the bottleneck" read from v3. Weights at
+`weights/yolo12s/yolo12s_rdd2022_continued.pt` (overwrote v3's, which no longer exist on disk).
+See `modelresults.md`'s "YOLO12s v4" entry for the per-class breakdown and full reasoning.
+
+**Two real things worth knowing before touching this again:**
+1. **Per-epoch timing was highly inconsistent this run** (~1h10min to ~3h45min for nominally
+   identical epochs), traced to system-wide RAM pressure (free RAM seen as low as ~1.2-1.7GB of
+   15.7GB total during the slow stretches, Windows actively using Memory Compression) — not a
+   training bug. `AcerSense` (Acer's bundled system monitor) consistently showed unusually high
+   cumulative CPU in every check during this run; never confirmed as the direct cause of a
+   specific stall, but worth investigating/disabling if this recurs.
+2. **Pausing on the exact last scheduled epoch breaks `--resume`** — paused right after epoch 25
+   (the final epoch of the ceiling) finished, and `--resume` then crashed with
+   `AssertionError: ...training to 25 epochs is finished, nothing to resume` (Ultralytics'
+   `resume_training()` asserts `0 < start_epoch < self.epochs`, never true once training already
+   hit its full epoch count). Not a `KeyboardInterrupt`, so `pause_control.py`'s except clause
+   doesn't catch it — training itself was genuinely fine, only the script's post-training steps
+   (copy `best.pt`, final test-set eval) never ran. **Worked around, not fixed in
+   `pause_control.py`**: wrote `training/_finalize_v4.py`, a one-off that manually redoes those
+   two steps against the already-valid `best.pt`. If this happens again on a future run, avoid
+   pausing right as the epoch ceiling is about to be hit, or reuse/adapt that script.
+
+**v3 (2026-08-30):** raised `imgsz` 256→416 only, everything else identical to v2 below (4000
+img / batch=16 / epochs=25 ceiling / AdamW lr0=0.001). Ran as a detached background process,
+unattended overnight, uninterrupted. Early-stopped at epoch 15 (`patience=5`, best weights from
+epoch 10) — didn't reach the 25-epoch ceiling, unlike v2 or v4. Test-set: mAP50 = 0.4172,
+mAP50-95 = 0.1953, precision = 0.5132, recall = 0.4366 (+12% mAP50 over v2). Plateauing well
+before the epoch ceiling is what motivated v4's `MAX_TRAIN_IMAGES` increase above — also worth
+remembering: because early-stop cut this run short, its cosine LR schedule (sized for the full
+25 epochs) never finished decaying as intended. Superseded by v4 above — weights no longer exist
+on disk. Full account in `modelresults.md`'s "YOLO12s v3" entry.
+
+**v2 (2026-08-28/29):** `MAX_TRAIN_IMAGES` 2000→4000, batch 8→16, epochs 15→25 (ceiling,
+`patience=5` still applies), `imgsz` unchanged at 256. Ran the full 25 epochs with no early stop,
+paused once mid-run (epoch 5) and resumed cleanly. Test-set: mAP50 = 0.3724, mAP50-95 = 0.1750,
+precision = 0.5072, recall = 0.3818 (+14% mAP50 over v1). Superseded by v3, then v4, above —
+weights no longer exist on disk. Full account in `modelresults.md`'s "YOLO12s v2" entry.
+
+**v1 (2026-08-28), the original 15-epoch/2000-image run — this paragraph was left mislabeled as
+"v2" in this file until 2026-08-30's correction; the numbers were always v1's:** ran the full 15
+epochs (4.49 hours, `patience=5` never triggered this time — plausibly because this run used the
+lower pinned `lr0=0.001` added 2026-08-27, vs. whatever `optimizer="auto"` picked for the deleted
+2026-08-22 run below; a slower-improving loss curve is less likely to look "plateaued" to the
+early-stop check). Test-set (5,758 images): **mAP50 = 0.3256, mAP50-95 = 0.1467, precision =
+0.4468, recall = 0.3570** — best of all 5 models attempted that session, see `modelresults.md`
+for the full comparison table. Superseded by v2 and now v3.
 
 **Historical (2026-08-22, run itself deleted 2026-08-27, numbers kept for context only — do not
 treat as current):** stopped at epoch 6 (`patience=5` triggered), mAP50 = 0.263, mAP50-95 =
@@ -200,6 +249,20 @@ two on auto; caught and corrected same day, see "caught by checking the real dat
 ## Open TODOs
 - [x] ~~Finish YOLO12s continued fine-tune~~ — **done 2026-08-28**, full 15 epochs, mAP50=0.3256.
       Best of all 5 models attempted. See `modelresults.md`.
+- [x] ~~YOLO12s v2 — raise MAX_TRAIN_IMAGES/epochs/batch~~ — **done 2026-08-28/29**, mAP50=0.3724
+      (+14% over v1). Superseded by v3.
+- [x] ~~YOLO12s v3 — raise imgsz 256→416~~ — **done 2026-08-30**, mAP50=0.4172 (+12% over v2,
+      +14% recall). Early-stopped at epoch 15/25 (best=epoch 10) — training-set size, not epoch
+      count, was the bottleneck, motivating v4 below.
+- [x] ~~YOLO12s v4 — raise MAX_TRAIN_IMAGES 4000→8000~~ — **done 2026-09-01**, mAP50=0.5362
+      (+29% over v3, +20% precision/recall). Ran the full 25 epochs, no early stop this time.
+      Current best model — see `modelresults.md`'s "YOLO12s v4" entry, including the real
+      `--resume`-crashes-on-the-last-epoch bug found and worked around this run.
+- [ ] `training/pause_control.py` doesn't handle pausing on the last scheduled epoch — `--resume`
+      crashes with an uncaught `AssertionError` rather than gracefully proceeding to
+      post-training steps (see v4 notes above). Not fixed, only worked around with a one-off
+      script (`training/_finalize_v4.py`) for that specific run. Worth a real fix if this project
+      keeps doing multi-day paused runs.
 - [x] ~~Run `training/train_yolo11n.py`~~ — **done 2026-08-28**, full 15 epochs, mAP50=0.1012.
 - [x] ~~Run `training/train_nsr51324_yolo11n.py`~~ — **done 2026-08-28**, mAP50=0.1563 (weakest
       of the two continued-fine-tunes, expected given its unmapped 7-class source taxonomy).

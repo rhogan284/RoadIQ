@@ -27,9 +27,17 @@ comparison once already).
 dropping and val mAP50 still climbing through epoch 15, with the LR schedule only just finishing
 its decay. Bumped to epochs=25 (patience=5 still applies, so this is a ceiling, not a forced full
 run), batch=16, and MAX_TRAIN_IMAGES 2000->4000 in prepare_dataset.py (imgsz left at 256
-deliberately — not part of this change). Estimated ~10-15 hours, not measured yet. This is now a
-YOLO12s-specific improvement run, decoupled from train_yolo11n.py's settings (that script is
-unchanged).
+deliberately — not part of that change). This v2 run got mAP50=0.3724, see `modelresults.md`.
+This is a YOLO12s-specific improvement run, decoupled from train_yolo11n.py's settings (that
+script is unchanged).
+
+**2026-08-30 update — imgsz 256->416, everything else unchanged from v2:** next lever on the
+same "raise imgsz/epochs/MAX_TRAIN_IMAGES" list from `modelresults.md` — cracks/potholes are
+small objects, so more pixels to detect them in should help disproportionately. epochs=25,
+batch=16, MAX_TRAIN_IMAGES=4000, optimizer/lr0/momentum all left as-is; only this script's train
+imgsz and the final test-set eval's imgsz changed (kept matched to each other, since evaluating
+at a different resolution than trained would confound the comparison). Only YOLO12s — the other
+three scripts are untouched.
 
 Trains against data_fast.yaml (val_small — a small val slice prepare_dataset.py writes
 alongside the full data.yaml), not data.yaml, so per-epoch validation for the patience/
@@ -74,7 +82,7 @@ def main() -> None:
         train_kwargs=dict(
             data=str(FAST_DATA_YAML),
             epochs=25,
-            imgsz=256,
+            imgsz=416,
             batch=16,
             device="cpu",
             project=str(RUNS_DIR),
@@ -99,7 +107,7 @@ def main() -> None:
     shutil.copy2(best, CONTINUED_WEIGHTS)
     print(f"Continued fine-tuned weights saved to {CONTINUED_WEIGHTS}")
 
-    metrics = model.val(data=str(DATA_YAML), split="test", imgsz=256, device="cpu")
+    metrics = model.val(data=str(DATA_YAML), split="test", imgsz=416, device="cpu")
     print("\nTest-set accuracy:")
     print(f"  mAP50:    {metrics.box.map50:.4f}")
     print(f"  mAP50-95: {metrics.box.map:.4f}")
