@@ -1,4 +1,12 @@
-"""feed-sim: replay images as a paced, prevalence-controlled frame feed."""
+"""feed-sim: replay images as a paced, prevalence-controlled frame feed.
+
+Frames carry a synthetic GPS fix by default (`--no-gps` to opt out). Before
+this, every replayed frame reached Postgres with `lat IS NULL`, which left the
+bytes-per-kilometre milestone with no denominator -- there was no distance to
+divide by. The track is generated here rather than baked into the fixture
+manifest because position belongs to the drive, not to the picture: the same
+pool of images replayed at a different speed must cover a different distance.
+"""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +28,14 @@ from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.db.migrate import apply_migrations
 from edgecv.db.repository import Repository
+from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix, SyntheticTrack
 from edgecv.feedsim.prevalence import PrevalenceSampler, pace_deadlines
+
+#: Sydney CBD, George and Market. An arbitrary but plausible survey origin.
+DEFAULT_START = (-33.8688, 151.2093)
+#: 50 km/h in m/s -- an urban survey speed.
+DEFAULT_SPEED_MPS = 13.89
+DEFAULT_BEARING_DEG = 90.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +52,36 @@ def load_pools(manifest_path: Path) -> tuple[list[str], list[str]]:
             [entry["path"] for entry in manifest["defect"]])
 
 
+def build_envelope(*, run_id: str, seq: int, path: str, data: bytes,
+                   width: int, height: int, transport: str,
+                   fix: Fix | None = None) -> FrameEnvelope:
+    """One frame envelope, with the position fields filled in when a fix exists.
+
+    Optional fields stay None when there is no fix rather than being sent as
+    zeros: contract 1 omits absent fields from the wire entirely, and
+    `run_coverage_1min` counts `frames_without_fix` off exactly that null.
+    """
+    return FrameEnvelope(
+        run_id=run_id, seq=seq,
+        captured_at=datetime.now(timezone.utc),
+        width=int(width), height=int(height),
+        source_ref=path,
+        sha256=hashlib.sha256(data).hexdigest(),
+        transport=transport,
+        payload=data if transport == "inline" else None,
+        path=path if transport == "reference" else None,
+        lat=fix.lat if fix else None,
+        lon=fix.lon if fix else None,
+        heading_deg=fix.heading_deg if fix else None,
+        speed_mps=fix.speed_mps if fix else None,
+        gps_accuracy_m=fix.gps_accuracy_m if fix else None,
+    )
+
+
 def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
              n_frames: int, fps: float, prevalence: float, maxlen: int,
-             seed: int, stream: str, transport: str = "reference") -> FeedStats:
+             seed: int, stream: str, transport: str = "reference",
+             track: SyntheticTrack | None = None) -> FeedStats:
     run_id = run_id or str(uuid.uuid4())
     clean, defect = load_pools(manifest)
     sampler = PrevalenceSampler(clean, defect, prevalence=prevalence,
@@ -55,15 +97,10 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         height, width = image.shape[:2]
 
-        envelope = FrameEnvelope(
-            run_id=run_id, seq=seq,
-            captured_at=datetime.now(timezone.utc),
-            width=int(width), height=int(height),
-            source_ref=path,
-            sha256=hashlib.sha256(data).hexdigest(),
-            transport=transport,
-            payload=data if transport == "inline" else None,
-            path=path if transport == "reference" else None,
+        envelope = build_envelope(
+            run_id=run_id, seq=seq, path=path, data=data,
+            width=width, height=height, transport=transport,
+            fix=track.fix_for(seq) if track else None,
         )
         if producer.publish(envelope) is not None:
             published += 1
@@ -89,7 +126,21 @@ def main() -> None:
     ap.add_argument("--authority-id", default="demo-council")
     ap.add_argument("--transport", choices=["inline", "reference"],
                     default="reference")
+    ap.add_argument("--no-gps", dest="gps", action="store_false", default=True,
+                    help="replay without a position fix (the pre-milestone-2 "
+                         "behaviour; leaves lat/lon NULL and makes "
+                         "bytes-per-km unmeasurable)")
+    ap.add_argument("--start-lat", type=float, default=DEFAULT_START[0])
+    ap.add_argument("--start-lon", type=float, default=DEFAULT_START[1])
+    ap.add_argument("--bearing", type=float, default=DEFAULT_BEARING_DEG)
+    ap.add_argument("--speed-mps", type=float, default=DEFAULT_SPEED_MPS)
+    ap.add_argument("--gps-accuracy-m", type=float, default=DEFAULT_ACCURACY_M)
     args = ap.parse_args()
+
+    track = SyntheticTrack(
+        start=(args.start_lat, args.start_lon), bearing_deg=args.bearing,
+        speed_mps=args.speed_mps, fps=args.fps, accuracy_m=args.gps_accuracy_m,
+    ) if args.gps else None
 
     run_id = args.run_id or str(uuid.uuid4())
     client = redis.from_url(settings.redis_url, decode_responses=False)
@@ -112,14 +163,26 @@ def main() -> None:
                          n_frames=args.frames, fps=args.fps,
                          prevalence=args.prevalence, maxlen=settings.frames_maxlen,
                          seed=args.seed, stream=settings.frames_stream,
-                         transport=args.transport)
+                         transport=args.transport, track=track)
 
-        repo.finish_run(stats.run_id, datetime.now(timezone.utc),
-                       config={"frames_offered": stats.offered,
-                               "frames_dropped": stats.dropped})
+        config: dict = {"frames_offered": stats.offered,
+                        "frames_dropped": stats.dropped}
+        if track is not None:
+            # Written so the denominator of the bytes-per-km figure can be
+            # audited and the run reproduced, not just trusted.
+            config["gps_track"] = {
+                "kind": "synthetic-rhumb", "start_lat": args.start_lat,
+                "start_lon": args.start_lon, "bearing_deg": args.bearing,
+                "speed_mps": args.speed_mps, "fps": args.fps,
+                "accuracy_m": args.gps_accuracy_m,
+                "expected_distance_m": round(track.distance_m(stats.published), 3),
+            }
+        repo.finish_run(stats.run_id, datetime.now(timezone.utc), config=config)
 
+    gps = f" distance_m={track.distance_m(stats.published):.1f}" if track else \
+          " gps=off"
     print(f"run_id={stats.run_id} offered={stats.offered} "
-          f"published={stats.published} dropped={stats.dropped}")
+          f"published={stats.published} dropped={stats.dropped}{gps}")
 
 
 if __name__ == "__main__":
