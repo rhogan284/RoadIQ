@@ -14,6 +14,7 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
     make itest            # integration tests (needs `make up`; stops app services first, see below)
     make fixtures         # generate synthetic fixture images (needed once for make demo)
     make demo             # full pipeline under compose
+    make bench-bytes      # bytes-per-kilometre figure for the latest run
 
 ## Architecture
 
@@ -28,6 +29,42 @@ test harness standing in for both the device and the run-registration step, not 
 statement that the real device will write to Postgres directly.
 
 See `docs/` and the design spec for detail.
+
+## Measurement — bytes per kilometre
+
+Success criterion 1 is "store and upload at least 100x less data per kilometre than
+keeping every frame". `make bench-bytes` reports it for the most recent run:
+
+    RoadIQ -- bytes per kilometre (success criterion 1)
+      frames          600  (600 with a GPS fix, 0 without)
+      distance        0.555 km
+      stored           106.8 KiB    192.5 KiB /km
+      every frame       24.7 MiB     44.5 MiB /km
+      reduction       236.7x   (target 100x)   PASS
+
+It exits non-zero when a run misses the target, so it can gate a build later.
+
+**feed-sim now emits a synthetic GPS fix on every frame** (`--no-gps` opts out).
+Before this every frame reached Postgres with `lat IS NULL`, so there was no
+distance to divide by and the figure could not be computed at all. The track is a
+rhumb line at constant speed -- deliberately not realistic, because a measurement
+rig wants a denominator that is analytically known. `survey_runs.config.gps_track`
+records the parameters so the distance can be audited.
+
+Three things to know before quoting the number:
+
+- **The fixtures are synthetic 256px images averaging ~42 KB**, not real RDD2022
+  road photos at ~500 KB. The every-frame baseline here is therefore about 12x
+  smaller than a real drive's, so this figure is a working measurement of the
+  pipeline, not a claim about real-world storage.
+- **Storage scales with defect prevalence.** This run used `--prevalence 0.03`
+  and stored 15 detections' crops. A rougher road stores more.
+- **`bytes_stored` is measured off the blob store, not `snippets.bytes`** -- that
+  column is a 0 placeholder on every row, because the writer only ever sees
+  content hashes on the wire. The store totals the whole tree, and snippets carry
+  no run linkage, so a per-run figure needs a store holding one run:
+  `BLOB_ROOT=/blobs/m2-run02 make bench-bytes`. Correct attribution on a shared
+  store needs a `run_snippets` join table written by the worker (Week 8).
 
 ## Contracts
 

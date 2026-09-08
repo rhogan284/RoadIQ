@@ -1,4 +1,4 @@
-.PHONY: install up down migrate test itest fixtures demo
+.PHONY: install up down migrate test itest fixtures demo bench-bytes
 
 # Editable-install .pth files can end up ignored by site.py (e.g. macOS marks
 # them UF_HIDDEN, or the working directory just isn't on sys.path). Setting
@@ -37,3 +37,10 @@ fixtures:
 
 demo: fixtures
 	docker compose up --build
+
+# Week 6 milestone: first bytes-per-kilometre measured and recorded.
+# Runs in a container because the blob store is the `blobs` named volume, which
+# the host cannot see. Exits non-zero when the run misses success criterion 1's
+# 100x target, so it can gate a build later.
+bench-bytes:
+	docker compose run --rm bench

@@ -6,7 +6,12 @@ x-app: &app
   environment:
     PG_DSN: postgresql://edgecv:edgecv@postgres:5432/edgecv
     REDIS_URL: redis://redis:6379/0
-    BLOB_ROOT: /blobs
+    # Overridable so a measurement run can own a fresh store: bytes-per-km
+    # totals the store, and snippets carry no run linkage, so a store shared
+    # across runs cannot be attributed to one. `BLOB_ROOT=/blobs/m2-01 make
+    # bench-bytes` is the practical workaround until a run_snippets join
+    # table exists.
+    BLOB_ROOT: ${BLOB_ROOT:-/blobs}
     FRAMES_MAXLEN: "1000"
   volumes:
     - blobs:/blobs
@@ -61,6 +66,14 @@ services:
       redis: {condition: service_healthy}
       postgres: {condition: service_healthy}
       writer: {condition: service_started}
+
+  # Measurement harness, not a long-running service: `make bench-bytes` runs it
+  # once. It needs the blobs volume, which is why it is a compose service at all
+  # rather than a host script -- the store lives in the volume, not the repo.
+  bench:
+    <<: *app
+    profiles: ["tools"]
+    command: python -m edgecv.bench.main
 
   dashboard:
     <<: *app
