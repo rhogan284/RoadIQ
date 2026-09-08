@@ -68,6 +68,18 @@ def process_one(envelope: FrameEnvelope, *, blobstore: BlobStore, worker_id: str
             latency_ms=(time.perf_counter() - began) * 1000,
             status=status, error=error, detections=detections,
             snippet_sha256s=snippets, thumbnail_sha256=thumbnail,
+            # Contract 2: position and clock are copied straight off the frame
+            # envelope. The worker is the only component that sees both the
+            # envelope and the result, so if it drops them here they are gone --
+            # the writer has nothing else to insert into `frames`. Copied for
+            # every status, failed frames included: a failed frame still gets a
+            # frames row and is still part of the coverage denominator, so it
+            # still has to carry the metres it covered.
+            lat=envelope.lat, lon=envelope.lon,
+            heading_deg=envelope.heading_deg, speed_mps=envelope.speed_mps,
+            gps_accuracy_m=envelope.gps_accuracy_m,
+            capture_mono_ns=envelope.capture_mono_ns,
+            device_boot_id=envelope.device_boot_id,
         )
 
     try:
