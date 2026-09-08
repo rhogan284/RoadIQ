@@ -48,3 +48,40 @@ def test_rejects_unknown_kind(store):
 def test_get_missing_raises(store):
     with pytest.raises(FileNotFoundError):
         store.get("0" * 64, kind="crop", fmt="png")
+
+# --- total_bytes: the numerator of the bytes-per-kilometre figure ------------
+#
+# Measured off the store rather than off `snippets.bytes`, because that column
+# is a 0 placeholder for every row (see Repository._snippet_id). The store is
+# the thing actually holding the bytes, so it is the honest place to ask.
+
+def test_total_bytes_of_an_empty_store_is_zero(store):
+    assert store.total_bytes() == 0
+
+
+def test_total_bytes_sums_every_blob(store):
+    store.put(b"12345", kind="crop", fmt="png", width=1, height=1)
+    store.put(b"678", kind="thumbnail", fmt="webp", width=1, height=1)
+    assert store.total_bytes() == 8
+
+
+def test_total_bytes_does_not_double_count_a_deduped_put(store):
+    store.put(b"12345", kind="crop", fmt="png", width=1, height=1)
+    store.put(b"12345", kind="crop", fmt="png", width=1, height=1)
+    assert store.total_bytes() == 5
+
+
+def test_total_bytes_can_be_filtered_by_kind(store):
+    store.put(b"12345", kind="crop", fmt="png", width=1, height=1)
+    store.put(b"678", kind="thumbnail", fmt="webp", width=1, height=1)
+    assert store.total_bytes(kind="crop") == 5
+    assert store.total_bytes(kind="thumbnail") == 3
+
+
+def test_total_bytes_ignores_partial_temp_files(store):
+    """`put` writes a .tmp file then renames. A crashed write leaves one behind,
+    and it is not stored data -- counting it would inflate the figure."""
+    ref = store.put(b"12345", kind="crop", fmt="png", width=1, height=1)
+    path = store.path_for(ref.sha256, kind="crop", fmt="png")
+    path.with_suffix(path.suffix + ".tmp99999").write_bytes(b"garbage")
+    assert store.total_bytes() == 5
