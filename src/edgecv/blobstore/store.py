@@ -56,3 +56,26 @@ class BlobStore:
 
     def exists(self, sha256: str, *, kind: str, fmt: str) -> bool:
         return self.path_for(sha256, kind=kind, fmt=fmt).exists()
+
+    def total_bytes(self, *, kind: str | None = None) -> int:
+        """Bytes on disk, optionally for one kind only.
+
+        This is the numerator of the bytes-per-kilometre figure. It is measured
+        here and not summed from `snippets.bytes`, because that column is
+        written as a 0 placeholder for every row -- the writer only ever sees
+        content hashes on the wire, never blob sizes (see
+        `Repository._snippet_id`). The store is what actually holds the bytes,
+        so it is the honest place to ask, and asking it needs no change to
+        frozen contract 2.
+
+        Dedup falls out for free: a replayed run writes no new files, so it adds
+        no bytes, which is the behaviour the crop store exists to produce.
+
+        `.tmp*` files are skipped. `put()` writes to one and renames, so any
+        left behind are the debris of a crashed write, not stored data.
+        """
+        root = self.root / kind if kind else self.root
+        if not root.exists():
+            return 0
+        return sum(f.stat().st_size for f in root.rglob("*")
+                   if f.is_file() and not f.suffix.startswith(".tmp"))
