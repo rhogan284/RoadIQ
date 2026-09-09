@@ -12,7 +12,10 @@ x-app: &app
     # bench-bytes` is the practical workaround until a run_snippets join
     # table exists.
     BLOB_ROOT: ${BLOB_ROOT:-/blobs}
-    FRAMES_MAXLEN: "1000"
+    # Overridable so a benchmark sweep can vary the buffer depth: the whole
+    # point of a bounded stream is that its depth is a tuning parameter, and
+    # forcing drops on purpose is how the coverage-gap reporting gets exercised.
+    FRAMES_MAXLEN: "${FRAMES_MAXLEN:-1000}"
   volumes:
     - blobs:/blobs
     - ./tests/fixtures/generated:/app/tests/fixtures/generated:ro

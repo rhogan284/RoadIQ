@@ -44,6 +44,12 @@ keeping every frame". `make bench-bytes` reports it for the most recent run:
 
 It exits non-zero when a run misses the target, so it can gate a build later.
 
+The per-kilometre figures divide by the **assessed** distance, not the whole attempted
+track. Stored bytes and the every-frame baseline both come from the frames actually
+processed, so the road those frames covered is the matching denominator. The ratio is
+unaffected either way — both sides divide by the same number — but the absolutes are
+not, which is only visible now that coverage is reported next to them.
+
 **feed-sim now emits a synthetic GPS fix on every frame** (`--no-gps` opts out).
 Before this every frame reached Postgres with `lat IS NULL`, so there was no
 distance to divide by and the figure could not be computed at all. The track is a
@@ -65,6 +71,69 @@ Three things to know before quoting the number:
   no run linkage, so a per-run figure needs a store holding one run:
   `BLOB_ROOT=/blobs/m2-run02 make bench-bytes`. Correct attribution on a shared
   store needs a `run_snippets` join table written by the worker (Week 8).
+
+## Coverage — drops as metres of road not assessed
+
+Success criterion 2 says "any frame we drop is counted and shown as a gap in the
+survey, measured in metres of road not assessed". `make bench-bytes` now reports it
+alongside the storage figures:
+
+    -- coverage (success criterion 2) ------------------------
+      assessed             472.3 m
+      not assessed          82.4 m   (88 frame(s) lost in 1 gap(s))
+      largest gap           82.4 m
+      coverage              85.1%
+
+Measured on a deliberately degraded run: `FRAMES_MAXLEN=5`, both workers paused for
+six seconds twelve seconds into a 40-second drive. 88 of 600 frames were refused, and
+they show up as one 82.4 m hole in the survey rather than as a frame count.
+
+A dropped frame has no row and no position of its own, but the frames either side of
+it do, so the hole is measured as the distance between its neighbours. That needs no
+knowledge of the track, so it works the same way on a real drive.
+
+Two absences look alike in SQL and mean opposite things, and `bench/coverage.py`
+keeps them apart:
+
+- **no row for a seq** — the frame was dropped. That road was never assessed. A gap.
+- **row with `lat` NULL** — the frame was processed, so coverage is proved; we just
+  cannot place it. The distance across it still counts as assessed, interpolated from
+  its positioned neighbours. Calling this a gap would understate coverage we can
+  actually evidence.
+
+`FRAMES_MAXLEN` is overridable so a sweep can vary the buffer depth and force drops
+on purpose: `FRAMES_MAXLEN=5 docker compose up -d worker writer`.
+
+## Bus health — lag, pending, and stuck work
+
+`edgecv.bus.observe` reads what Redis exposes about the consumer group, and the
+dashboard shows it. Three numbers that get confused constantly:
+
+| | meaning |
+|---|---|
+| **lag** | entries the group has not been *delivered* yet — backlog |
+| **pending** | entries delivered but not yet `XACK`ed — work in progress |
+| **idle** | how long an entry has sat in a consumer's PEL undone — trouble |
+
+Rising `lag` means the workers cannot keep up. Rising `pending` with a high `idle`
+means a worker took work and died, which is what `XAUTOCLAIM` exists to fix.
+
+**`lag` can come back nil, and the panel shows "unknown" rather than 0.** That happens
+when entries *ahead* of the group's last-delivered-id are deleted, which makes the
+count uncomputable for that group from then on. Our writer only `XDEL`s after `XACK`
+— at or below last-delivered-id — so our lag stays computable.
+
+This is also why the producer refuses the **newest** frame when the buffer is full
+rather than using Redis's `XADD MAXLEN`/`XTRIM`, which evicts the **oldest**.
+Trimming does not respect the pending-entries list: it will delete entries a worker
+has claimed and not acknowledged, leaving dangling PEL references that `XPENDING`
+still reports as in flight. And under backpressure the oldest entries are exactly the
+ones a lagging consumer has not reached — so trimming would blind the lag panel
+precisely when the pipeline is under the load you most need to watch. One design
+choice protects both the data and the ability to see what is happening to it.
+
+Measured, not assumed — see `PDLJ/_evidence/2026-09-05-t1-maxlen-vs-pel.txt` and
+`2026-09-06-t1-lag-counter-invalidation.txt` in the vault.
 
 ## Contracts
 
