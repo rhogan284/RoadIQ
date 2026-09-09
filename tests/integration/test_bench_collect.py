@@ -166,3 +166,64 @@ def test_latest_run_id_on_an_empty_database_is_an_error(clean_db):
         cur.execute("TRUNCATE survey_runs CASCADE")
     with pytest.raises(LookupError, match="no survey runs"):
         latest_run_id(clean_db)
+
+
+# --- coverage gaps in metres (success criterion 2) --------------------------
+
+def test_run_coverage_reports_a_dropped_frame_as_metres_not_assessed(clean_db,
+                                                                     track,
+                                                                     sources):
+    from edgecv.bench.collect import run_coverage
+
+    run_id = str(uuid.uuid4())
+    _seed_run(clean_db, run_id, track=track, sources=sources, n_frames=101)
+    # Drop seq 50, as a full stream buffer would have.
+    with clean_db.cursor() as cur:
+        cur.execute("DELETE FROM frames WHERE run_id = %s AND seq = 50", (run_id,))
+
+    report = run_coverage(clean_db, run_id)
+
+    assert report.frames == 100
+    assert report.missing_frames == 1
+    assert report.gap_count == 1
+    # Two frame intervals at 13.89 m/s and 10 fps.
+    assert report.gap_m == pytest.approx(2 * SPEED / FPS, rel=1e-3)
+    assert report.gaps[0].after_seq == 49
+    assert report.gaps[0].before_seq == 51
+
+
+def test_run_coverage_on_a_clean_run_has_no_gaps(clean_db, track, sources):
+    from edgecv.bench.collect import run_coverage
+
+    run_id = str(uuid.uuid4())
+    _seed_run(clean_db, run_id, track=track, sources=sources, n_frames=101)
+    report = run_coverage(clean_db, run_id)
+    assert report.gap_count == 0
+    assert report.coverage_pct == pytest.approx(100.0)
+    assert report.assessed_m == pytest.approx(SPEED * 10.0, rel=1e-3)
+
+
+def test_bytes_per_km_divides_by_assessed_road_not_attempted(clean_db, track,
+                                                             sources, tmp_path):
+    """Stored bytes come from the frames we actually processed, so the per-km
+    figure has to divide by the road those frames covered. Dividing by the whole
+    attempted track would spread the bytes over road nobody surveyed and report a
+    smaller number than the truth."""
+    from edgecv.bench.collect import measure_run, run_coverage
+
+    run_id = str(uuid.uuid4())
+    _seed_run(clean_db, run_id, track=track, sources=sources, n_frames=101)
+    # A 10-frame hole: 9 intervals of road attempted but never assessed.
+    with clean_db.cursor() as cur:
+        cur.execute("DELETE FROM frames WHERE run_id = %s AND seq BETWEEN 40 AND 49",
+                    (run_id,))
+
+    coverage = run_coverage(clean_db, run_id)
+    store = BlobStore(root=tmp_path / "blobs")
+    store.put(b"x" * 1_000, kind="crop", fmt="png", width=8, height=8)
+
+    result = measure_run(clean_db, store, run_id)
+
+    assert coverage.gap_m > 0                       # there really is a hole
+    assert result.distance_km == pytest.approx(coverage.assessed_m / 1000, rel=1e-9)
+    assert result.distance_km < coverage.attempted_m / 1000
