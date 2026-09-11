@@ -18,19 +18,19 @@ class CaptureManifest:
     gps_accuracy_m: Optional[float] = None
 
     def __post_init__(self):
-        # Validate UUIDs
+        
         uuid.UUID(self.run_id)
         uuid.UUID(self.device_boot_id)
 
-        # Validate sequence number
+    
         if self.seq < 0:
             raise ValueError("seq must be >= 0")
 
-        # Validate sha256 hex string
+        
         if not re.match(r"^[0-9a-f]{64}$", self.sha256):
             raise ValueError("sha256 must be a 64-character lowercase hex string")
 
-        # Enforce dependentRequired: lat and lon must appear together or both be None
+        
         if (self.lat is None) != (self.lon is None):
             raise ValueError("lat and lon must be provided together or both be None")
 
@@ -39,4 +39,16 @@ class CaptureManifest:
 
     @classmethod
     def from_dict(cls, data: dict) -> "CaptureManifest":
-        return cls(**data)
+        return cls(
+            run_id=data["run_id"],
+            seq=data["seq"],
+            captured_at=data["captured_at"],
+            capture_mono_ns=data["capture_mono_ns"],
+            device_boot_id=data["device_boot_id"],
+            sha256=data["sha256"],
+            lat=data.get("lat"),
+            lon=data.get("lon"),
+            heading_deg=data.get("heading_deg"),
+            speed_mps=data.get("speed_mps"),
+            gps_accuracy_m=data.get("gps_accuracy_m"),
+        )
