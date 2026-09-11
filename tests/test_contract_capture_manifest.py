@@ -44,7 +44,9 @@ def test_invalid_seq():
 
 
 def test_invalid_sha256():
-    with pytest.raises(ValueError, match="sha256 must be a 64-character lowercase hex string"):
+    with pytest.raises(
+        ValueError, match="sha256 must be a 64-character lowercase hex string"
+    ):
         CaptureManifest(
             run_id=str(uuid.uuid4()),
             seq=0,
@@ -53,3 +55,20 @@ def test_invalid_sha256():
             device_boot_id=str(uuid.uuid4()),
             sha256="invalid_hex",
         )
+
+
+def test_dict_serialization_roundtrip():
+    data = {
+        "run_id": str(uuid.uuid4()),
+        "seq": 43,
+        "captured_at": "2026-08-19T09:15:03.220000+00:00",
+        "capture_mono_ns": 1234567890123,
+        "device_boot_id": str(uuid.uuid4()),
+        "sha256": "b" * 64,
+    }
+    manifest = CaptureManifest.from_dict(data)
+    assert manifest.heading_deg is None
+
+    serialized = manifest.to_dict()
+    assert "heading_deg" not in serialized
+    assert serialized["seq"] == 43
