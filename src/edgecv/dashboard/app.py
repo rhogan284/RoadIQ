@@ -145,7 +145,7 @@ def main() -> None:
     st.set_page_config(page_title="Road Condition Map", layout="wide")
     st.title("Road Condition Map")
 
-    # Fetch data from DB or mock fallback
+    
     try:
         with psycopg.connect(Settings.from_env().pg_dsn, autocommit=True) as conn:
             raw_geojson = latest_segments_geojson(conn)
@@ -154,7 +154,7 @@ def main() -> None:
 
     features = raw_geojson.get("features", [])
 
-    # Sidebar Filter Controls (Matches your HTML filter logic)
+    
     st.sidebar.header("Map Controls")
     selected_filter = st.sidebar.selectbox(
         "Condition Filter",
@@ -162,7 +162,7 @@ def main() -> None:
         format_func=lambda x: "All Segments" if x == "all" else x.capitalize()
     )
 
-    # Filter features based on selection
+    
     if selected_filter != "all":
         filtered_features = [
             f for f in features 
@@ -171,10 +171,10 @@ def main() -> None:
     else:
         filtered_features = features
 
-    # Map information stats
+    
     st.sidebar.markdown(f"**Segments shown:** `{len(filtered_features)}`")
 
-    # Legend UI Block
+    
     st.sidebar.markdown("---")
     st.sidebar.subheader("Legend")
     st.sidebar.markdown("🟢 **Good**")
@@ -182,7 +182,7 @@ def main() -> None:
     st.sidebar.markdown("🔴 **Poor**")
     st.sidebar.markdown("⚪ **Unknown**")
 
-    # Render Map
+    
     if filtered_features:
         m = folium.Map(location=[-33.8688, 151.2093], zoom_start=13)
 
@@ -196,7 +196,7 @@ def main() -> None:
             color = 'green' if band == 'good' else 'orange' if band == 'fair' else 'red'
             return {'color': color, 'weight': 6, 'opacity': 0.85}
 
-        # Enhanced Popups (Matches your HTML popup content)
+        
         def build_popup_html(props):
             counts = props.get("counts") or {}
             return f"""
@@ -227,7 +227,7 @@ def main() -> None:
             )
         )
 
-        # Attach detailed popup to each feature
+        
         for feature in filtered_geojson["features"]:
             popup_html = build_popup_html(feature["properties"])
             folium.Popup(popup_html, max_width=300).add_to(
