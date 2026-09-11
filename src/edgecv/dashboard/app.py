@@ -7,7 +7,10 @@ panel spec §5 actually asks for.
 """
 from __future__ import annotations
 
+import folium
 import psycopg
+import streamlit as st
+from streamlit_folium import st_folium
 
 
 def run_options(conn: psycopg.Connection) -> list[dict]:
@@ -34,10 +37,48 @@ def coverage_series(conn: psycopg.Connection, run_id: str) -> list[dict]:
                 for r in cur.fetchall()]
 
 
+def latest_segments_geojson(conn: psycopg.Connection) -> dict:
+    query = """
+    SELECT json_build_object(
+        'type', 'FeatureCollection',
+        'features', COALESCE(json_agg(
+            json_build_object(
+                'type', 'Feature',
+                'geometry', ST_AsGeoJSON(s.geom)::json,
+                'properties', json_build_object(
+                    'segment_id', s.segment_id,
+                    'authority_id', s.authority_id,
+                    'road_name', s.road_name,
+                    'road_ref', s.road_ref,
+                    'length_m', s.length_m,
+                    'surface_type', s.surface_type,
+                    'run_id', sc.run_id,
+                    'assessed_at', sc.assessed_at,
+                    'condition_index', sc.condition_index,
+                    'condition_band', sc.condition_band,
+                    'counts', sc.counts,
+                    'frames_assessed', sc.frames_assessed,
+                    'coverage_m', sc.coverage_m
+                )
+            )
+        ), '[]'::json)
+    )
+    FROM segments s
+    JOIN LATERAL (
+        SELECT * FROM segment_condition
+        WHERE segment_id = s.segment_id
+        ORDER BY assessed_at DESC
+        LIMIT 1
+    ) sc ON true;
+    """
+    with conn.cursor() as cur:
+        cur.execute(query)
+        result = cur.fetchone()
+        return result[0] if result else {"type": "FeatureCollection", "features": []}
+
+
 def main() -> None:
     import pandas as pd
-    import streamlit as st
-
     from edgecv.config import Settings
 
     st.set_page_config(page_title="Road condition pipeline", layout="wide")
@@ -71,6 +112,33 @@ def main() -> None:
         st.subheader("Coverage over time")
         st.line_chart(frame[["frames_ingested", "frames_processed"]])
         st.dataframe(frame)
+
+        st.divider()
+        st.subheader("Segment Condition Map")
+
+        geojson_data = latest_segments_geojson(conn)
+
+        if geojson_data and geojson_data.get("features"):
+            m = folium.Map(location=[-33.8685, 151.2090], zoom_start=13)
+
+            def style_function(feature):
+                band = feature['properties'].get('condition_band', 'unknown')
+                color = 'green' if band == 'good' else 'orange' if band == 'fair' else 'red'
+                return {'color': color, 'weight': 5, 'opacity': 0.8}
+
+            folium.GeoJson(
+                geojson_data,
+                name="Contract 6 Segments",
+                style_function=style_function,
+                tooltip=folium.GeoJsonTooltip(
+                    fields=["road_name", "road_ref", "condition_band", "condition_index"],
+                    aliases=["Road:", "Ref:", "Band:", "Index:"]
+                )
+            ).add_to(m)
+
+            st_folium(m, width=1000, height=600)
+        else:
+            st.info("No segment condition data available to render on the map.")
 
 
 if __name__ == "__main__":
