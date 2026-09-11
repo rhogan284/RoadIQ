@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from edgecv.dashboard.app import coverage_series
+from edgecv.dashboard.app import coverage_series, latest_segments_geojson
 from edgecv.db.repository import Repository
 from tests.test_repository import _result
 
@@ -48,3 +48,13 @@ def test_coverage_counts_frames_that_were_never_processed(pg_conn, repo):
     rows = coverage_series(pg_conn, RUN_ID)
     assert sum(r["frames_ingested"] for r in rows) == 2
     assert sum(r["frames_processed"] for r in rows) == 1
+
+
+def test_latest_segments_geojson(pg_conn):
+    """Verify that latest_segments_geojson returns a valid Contract 6 GeoJSON structure."""
+    geojson = latest_segments_geojson(pg_conn)
+
+    assert isinstance(geojson, dict)
+    assert geojson.get("type") == "FeatureCollection"
+    assert "features" in geojson
+    assert isinstance(geojson["features"], list)
