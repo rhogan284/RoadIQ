@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CaptureManifest",
-  "description": "CONTRACT 5 \u2014 Dexter's device -> Ryan's ingest path. PROVISIONAL.",
-  "x-status": "PROVISIONAL",
+  "description": "CONTRACT 5 \u2014 Dexter's device -> Ryan's ingest path. FROZEN.",
+  "x-status": "FROZEN 2026-09-11",
   "x-owner": "Dexter",
   "type": "object",
   "required": [
