@@ -7,7 +7,11 @@ dependency below was checked against `src/edgecv/contracts/frame.py` and
 older draft. See docs/CONTRACTS.md for the mismatches that check turned up
 against an earlier version of this file.
 
-Contracts 3-6 are PROVISIONAL: their shape is derived from the real schema
+Contract 5 (CAPTURE_MANIFEST) is exported FROM `capture_manifest.py` the same
+way: every rule its `__post_init__` enforces is mirrored here so a non-Python
+device validates identically. It is FROZEN, so edit BOTH or neither.
+
+Contracts 3, 4 and 6 are PROVISIONAL: their shape is derived from the real schema
 (src/edgecv/db/migrations/001_initial.sql) and the one read query that exists
 today (src/edgecv/dashboard/app.py), but the named owner has not signed off
 on the semantics yet. Each carries "x-status" and "x-owner" so the status
@@ -263,13 +267,14 @@ BENCH_RUN = {
 # derived from FrameEnvelope's own fields (the manifest is what lets Ryan's
 # ingest path build a FrameEnvelope later) plus the concrete requirements in
 # the "Inbound changes" section of docs/CONTRACTS.md. Deliberately a JSON
-# example, not a dataclass — the shape will move once Dexter engages.
+# Mirrors CaptureManifest.__post_init__ in
+# src/edgecv/contracts/capture_manifest.py, which is now the source of truth.
 # ---------------------------------------------------------------------------
 CAPTURE_MANIFEST = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "CaptureManifest",
-    "description": "CONTRACT 5 — Dexter's device -> Ryan's ingest path. PROVISIONAL.",
-    "x-status": "PROVISIONAL",
+    "description": "CONTRACT 5 — Dexter's device -> Ryan's ingest path. FROZEN.",
+    "x-status": "FROZEN 2026-09-11",
     "x-owner": "Dexter",
     "type": "object",
     "required": ["run_id", "seq", "captured_at", "capture_mono_ns",
@@ -283,18 +288,21 @@ CAPTURE_MANIFEST = {
                             "time; best-effort device clock otherwise.",
         },
         "capture_mono_ns": {
-            "type": "integer",
+            "type": "integer", "minimum": 0,
             "description": "Required (not optional, unlike the frame "
                             "envelope) — the manifest is device-authored, so "
                             "the boot-relative clock always exists at capture time.",
         },
         "device_boot_id": {"type": "string", "format": "uuid"},
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "lat": {"type": ["number", "null"]},
-        "lon": {"type": ["number", "null"]},
-        "heading_deg": {"type": ["number", "null"]},
-        "speed_mps": {"type": ["number", "null"]},
-        "gps_accuracy_m": {"type": ["number", "null"]},
+        # Bounds catch a lat/lon swap, which dependentRequired cannot see:
+        # every Australian coordinate has |lon| > 90, so a swapped pair breaks
+        # the lat bound. CaptureManifest._validate_position enforces the same.
+        "lat": {"type": ["number", "null"], "minimum": -90, "maximum": 90},
+        "lon": {"type": ["number", "null"], "minimum": -180, "maximum": 180},
+        "heading_deg": {"type": ["number", "null"], "minimum": 0, "maximum": 360},
+        "speed_mps": {"type": ["number", "null"], "minimum": 0},
+        "gps_accuracy_m": {"type": ["number", "null"], "minimum": 0},
     },
     "dependentRequired": {"lat": ["lon"], "lon": ["lat"]},
     "x-notes": "spool_seq is DEFERRED, not forgotten — it depends on an "
