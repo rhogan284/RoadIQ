@@ -9,7 +9,7 @@ integration weekend.
 | 2 | Detector plugin interface | Ryan <-> Shervin | Ryan | FROZEN 2026-08-19 |
 | 3 | Read API | DB -> Joseph | Joseph | PROVISIONAL — shape below, awaiting Joseph |
 | 4 | bench_runs + grid config | Ilana <-> all | Ilana | PROVISIONAL — table exists, grid axes open |
-| 5 | Capture manifest | Dexter -> Ryan | Dexter | PROVISIONAL — requirements below |
+| 5 | Capture manifest | Dexter -> Ryan | Dexter | FROZEN 2026-09-11 |
 | 6 | Segments GeoJSON + condition index | Ryan -> Dexter, Joseph | Ryan (shape) / Ilana (index) | PROVISIONAL |
 
 **PROVISIONAL means:** the shape is written down and you can code against it today, but the named
@@ -19,7 +19,8 @@ send a change — before Week 5, when code starts depending on it.
 Exported JSON Schema for every contract lives under
 [`src/edgecv/contracts/schemas/`](../src/edgecv/contracts/schemas/), built by
 [`scripts/export_schemas.py`](../scripts/export_schemas.py). For contracts 1 and 2 **the dataclasses
-are the source of truth** — `src/edgecv/contracts/frame.py` and `detection.py`. Where this document or
+are the source of truth** — `src/edgecv/contracts/frame.py` and `detection.py`. Contract 5 joined them
+on 2026-09-11: `capture_manifest.py` is now the source of truth for the capture manifest. Where this document or
 the exported schema disagrees with the dataclass, the dataclass wins; every place that happened during
 this pass is called out below rather than silently fixed.
 
@@ -285,11 +286,18 @@ all-or-nothing write.
 
 ## 5. Capture manifest
 
-**PROVISIONAL — owner Dexter.** No table or code path exists for this yet — it's Dexter's device-side
-manifest, produced before a frame ever reaches Redis. The shape below is deliberately a JSON example,
-not a dataclass, because it depends on the frame envelope's own optional fields and on requirements
-that are still open (see "Inbound changes" below); freezing it as code now would freeze the wrong
-thing.
+**FROZEN 2026-09-11 — owner Dexter.** `CaptureManifest` in
+[`capture_manifest.py`](../src/edgecv/contracts/capture_manifest.py) is the source of truth; the JSON
+below is the same shape on the wire. Dexter's device writes it before a frame ever reaches Redis, and
+something on Ryan's side turns a validated entry into a `FrameEnvelope`.
+
+This section previously said the shape was deliberately *not* a dataclass, because freezing it as code
+would freeze the wrong thing. That caveat is retired for the six fields below, which were never in
+doubt — but **not** for `spool_seq`, which stays deferred. Adding it later is a breaking change to a
+frozen contract, so settle it before anyone writes a device spool against this.
+
+Validation is strict and every failure is a `ValueError`, including a missing key in `from_dict`. The
+device is the last cheap place to reject a bad manifest; see "What changing it would break" below.
 
 ```json
 {
@@ -317,8 +325,10 @@ guessed at — see the inbound-changes note for why. The device spool itself is 
 resumable upload, **not** Redis, so this manifest is not published directly onto the `frames` stream by
 the device; something on Ryan's side turns a validated manifest entry into a `FrameEnvelope`.
 
-**What changing it would break:** nothing runs against this yet, so the immediate blast radius is
-zero — but the frame envelope's own validation (`lat`/`lon` paired, `capture_mono_ns` requiring
+**What changing it would break:** no ingest path consumes it yet, so the immediate blast radius is
+still small — but it is frozen now, so a change needs the team, and `tests/test_contract_capture_manifest.py`
+validates the dataclass against the exported schema, so the two cannot drift apart quietly. The frame
+envelope's own validation (`lat`/`lon` paired, `capture_mono_ns` requiring
 `device_boot_id`) already assumes the manifest supplies both together. If Dexter's device path ever
 produces one without the other, `FrameEnvelope.__post_init__` raises `ValueError` and that frame never
 reaches the pipeline at all — better to catch that on the device than to discover it at ingest.
