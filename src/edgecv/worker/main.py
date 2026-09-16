@@ -28,6 +28,10 @@ THUMB_FMT = "webp"
 RECLAIM_IDLE_MS = 30_000
 READ_COUNT = 10
 RECLAIM_COUNT = 10
+# Frames destroyed after a worker accepted them. Deliberately not keyed by
+# run_id the way the producer's `stats:{run_id}:dropped` is: the entry's
+# payload is gone, so there is no run_id or seq left to key it by.
+LOST_IN_FLIGHT_KEY = "stats:lost_in_flight"
 
 
 def _decode(envelope: FrameEnvelope) -> np.ndarray:
@@ -123,6 +127,22 @@ def _handle(entry_id, envelope, *, consumer: FrameConsumer, blobstore: BlobStore
     consumer.ack(entry_id)
 
 
+def _record_lost(client: redis.Redis, entry_ids: list[str], *,
+                 worker_id: str) -> None:
+    """Count frames XAUTOCLAIM found destroyed under the pending-entries list.
+
+    A refused frame is a *known* gap: the producer counted it and the run knows
+    which frame it was. This is the unknown kind — a worker had accepted the
+    frame and the entry was destroyed beneath it, taking run_id, seq and
+    position with it. The count is the alarm. The metres come from the coverage
+    report, which sees the same loss as a missing `frames` row and measures the
+    hole between its surviving neighbours.
+    """
+    client.incrby(LOST_IN_FLIGHT_KEY, len(entry_ids))
+    print(f"{worker_id} LOST {len(entry_ids)} in-flight frame(s) — stream entries "
+          f"destroyed while pending: {', '.join(entry_ids)}", flush=True)
+
+
 def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
                       worker_id: str, client: redis.Redis,
                       results_stream: str) -> int:
@@ -137,17 +157,25 @@ def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
     worker left behind for many seconds if there are more idle entries than
     one call covers — every extra batch waits for another empty read, and
     FrameConsumer.read() blocks for block_ms (2s default) each time there is
-    nothing new. Looping here until reclaim() returns empty drains the
+    nothing new. Looping here until reclaim() stops making progress drains the
     entire backlog in one pass instead, with no added delay.
+
+    The loop condition is `progressed`, not "returned deliveries". An
+    XAUTOCLAIM page that only purges destroyed entries recovers no work but has
+    still advanced through the PEL, and stopping on it strands the live orphans
+    sitting behind it — which is the bug this looked like before the purged-id
+    list was read at all.
     """
     processed = 0
-    batch = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
-    while batch:
-        for entry_id, envelope in batch:
+    outcome = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
+    while outcome.progressed:
+        for entry_id, envelope in outcome.deliveries:
             _handle(entry_id, envelope, consumer=consumer, blobstore=blobstore,
                     worker_id=worker_id, client=client, results_stream=results_stream)
             processed += 1
-        batch = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
+        if outcome.lost_entry_ids:
+            _record_lost(client, outcome.lost_entry_ids, worker_id=worker_id)
+        outcome = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
     return processed
 
 
