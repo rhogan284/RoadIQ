@@ -201,7 +201,9 @@ function renderStats() {
   $("s-def").textContent = s.defects.toLocaleString();
   $("s-def-l").textContent = `defects on the register · ${s.pending_review} to review`;
   $("s-acc").textContent = `${s.frames_accounted_pct}%`;
-  $("s-acc-l").textContent = `frames accounted for · ${s.frames_dropped} dropped`;
+  $("s-acc-l").textContent = `frames accounted for · ` +
+    (s.frames_in_flight ? `${s.frames_in_flight.toLocaleString()} in flight · ` : "") +
+    `${s.frames_dropped.toLocaleString()} dropped`;
   $("s-mb").textContent = fmtBytes(s.bytes_stored);
   $("s-mb-l").textContent = `crops uploaded, of ${fmtBytes(s.raw_bytes)} captured`;
   const r = s.run;

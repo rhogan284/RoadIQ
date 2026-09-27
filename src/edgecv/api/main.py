@@ -11,10 +11,8 @@ the dashboard never needs a path into the blob store or the dataset.
 """
 from __future__ import annotations
 
+import json
 import os
-import subprocess
-import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +30,7 @@ from edgecv.blobstore.store import BlobStore
 from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.feedsim.main import control_key, state_key
+from edgecv.runner import LOG as RUNNER_LOG, REQUESTS as RUNNER_REQUESTS, STATUS as RUNNER_STATUS
 from edgecv.roads import load_ways
 from edgecv.segmenter.index import AUTO_ACCEPT_CONF
 from edgecv.segmenter.main import HEADING_TOL_DEG, SNAP_LATERAL, SNAP_M, segment_run
@@ -116,7 +115,16 @@ def summary(run_id: str) -> dict:
                     (run_id,))
         scored, seg_cov = cur.fetchone()
     cfg = run["config"] or {}
-    offered = cfg.get("frames_offered") or ingested
+    if run["ended_at"] is None:
+        # Live: feed-sim writes its totals only when it finishes, so read its running
+        # counters off the bus instead. Without this, "offered" fell back to what had
+        # landed, and a run backing up at 12 fps still read 100 % accounted for.
+        published, dropped = _live_counts(run_id)
+        offered = max(published + dropped, ingested)
+    else:
+        offered = cfg.get("frames_offered") or ingested
+        dropped = cfg.get("frames_dropped", 0)
+    in_flight = max(0, offered - dropped - ingested)
     stored = _run_crop_bytes(run_id)
     return {
         "run": {k: run[k] for k in ("run_id", "authority_id", "started_at", "ended_at",
@@ -126,13 +134,25 @@ def summary(run_id: str) -> dict:
         "defects": defects, "pending_review": pending,
         "frames_offered": offered, "frames_ingested": ingested,
         "frames_processed": processed,
-        "frames_dropped": cfg.get("frames_dropped", 0),
-        "frames_accounted_pct": round(100 * processed / offered, 1) if offered else 0.0,
+        "frames_dropped": dropped, "frames_in_flight": in_flight,
+        # "Accounted for" = the frame's fate is known: it landed, or it was refused by the
+        # bounded bus and counted. Frames still in flight are the only unaccounted ones.
+        "frames_accounted_pct": round(100 * (ingested + dropped) / offered, 1) if offered else 0.0,
         # THIS run's crops only. Thumbnails are stored but not linked to a run, and the
         # store is shared across runs, so its total would overstate a short run.
         "bytes_stored": int(stored), "raw_bytes": cfg.get("raw_bytes_offered"),
         "segments_scored": scored, "segment_coverage_km": round(float(seg_cov) / 1000, 2),
     }
+
+
+def _live_counts(run_id: str) -> tuple[int, int]:
+    """(published, dropped) so far, from the producer's per-run counters."""
+    try:
+        client = redis.from_url(SETTINGS.redis_url)
+        pub, drop = client.mget(f"stats:{run_id}:published", f"stats:{run_id}:dropped")
+        return int(pub or 0), int(drop or 0)
+    except (redis.RedisError, ValueError):
+        return 0, 0
 
 
 def _run_crop_bytes(run_id: str) -> int:
@@ -407,25 +427,26 @@ class StartRun(BaseModel):
     route_seed: int | None = None          # None = a new random route
 
 
-#: The run the dashboard started, if any: one at a time, so two feeds never share a bus.
-_RUNNER: dict = {}
+RUNNER_BUSY = ("starting", "feeding", "scoring")
 
 
-def _runner_alive() -> bool:
-    proc = _RUNNER.get("proc")
-    return proc is not None and proc.poll() is None
+def _runner_state(client) -> dict:
+    return client.hgetall(RUNNER_STATUS) or {}
 
 
 @app.post("/api/runs/start")
 def start_run(body: StartRun) -> dict:
-    """Start a new survey run: edgecv.runner (feed-sim → drain → segmenter → bench) as its
-    own process. Refuses while another run is feeding — from here or from `make e2e`."""
+    """Queue a new survey run for the `runner` service (feed-sim → drain → segmenter →
+    bench). The API only queues it, so redeploying the API cannot kill a run. Refuses
+    while another run is queued, feeding or scoring — from here or from `make e2e`."""
     if not 1 <= body.fps <= 30:
         raise HTTPException(422, "fps must be between 1 and 30")
     if body.max_frames is not None and body.max_frames < 10:
         raise HTTPException(422, "max_frames must be at least 10")
-    if _runner_alive():
-        raise HTTPException(409, f"run {_RUNNER['run_id']} is still going")
+    client = redis.from_url(SETTINGS.redis_url, decode_responses=True)
+    state = _runner_state(client)
+    if state.get("state") in RUNNER_BUSY or client.llen(RUNNER_REQUESTS):
+        raise HTTPException(409, f"run {state.get('run_id', '?')} is still {state.get('state', 'queued')}")
     with db() as conn, conn.cursor() as cur:
         cur.execute("SELECT run_id::text FROM survey_runs WHERE ended_at IS NULL "
                     "AND started_at > now() - interval '6 hours'")
@@ -433,36 +454,28 @@ def start_run(body: StartRun) -> dict:
     feeding = [r for r in open_runs if _feed_state(r) in ("running", "paused")]
     if feeding:
         raise HTTPException(409, f"run {feeding[0]} is still feeding — pause or cancel it first")
-    run_id = str(uuid.uuid4())
-    cmd = [sys.executable, "-m", "edgecv.runner", "--run-id", run_id, "--fps", str(body.fps),
-           "--route-mode", body.route_mode]
-    if body.route_seed is not None:
-        cmd += ["--route-seed", str(body.route_seed)]
-    if body.max_frames:
-        cmd += ["--max-frames", str(body.max_frames)]
-    log = Path(tempfile.gettempdir()) / f"runner-{run_id}.log"
-    # Own session, so an API worker reload doesn't take the run down with it. (A container
-    # restart still does — the run is then left open and can be cancelled.)
-    proc = subprocess.Popen(cmd, stdout=log.open("w"), stderr=subprocess.STDOUT,
-                            start_new_session=True)
-    _RUNNER.update(proc=proc, run_id=run_id, log=log, started=time.time(), request=body.model_dump())
-    return {"run_id": run_id, "pid": proc.pid, "request": body.model_dump()}
+    req = {"run_id": str(uuid.uuid4()), **body.model_dump()}
+    client.hset(RUNNER_STATUS, mapping={"run_id": req["run_id"], "state": "starting",
+                                        "request": json.dumps(req), "started": time.time(),
+                                        "updated": time.time(), "exit_code": ""})
+    client.rpush(RUNNER_REQUESTS, json.dumps(req))
+    return {"run_id": req["run_id"], "request": body.model_dump()}
 
 
 @app.get("/api/runner")
 def runner_status() -> dict:
-    """The dashboard-started run: alive, exit code, and the last lines of its log (the
-    drain/segment/bench steps after the feed ends are only visible here)."""
-    if not _RUNNER:
+    """The runner service's current job: state, and the last lines of its log (the drain,
+    segment and bench steps after the feed ends are only visible here)."""
+    client = redis.from_url(SETTINGS.redis_url, decode_responses=True)
+    st = _runner_state(client)
+    if not st:
         return {"run_id": None, "alive": False}
-    tail = ""
-    try:
-        tail = "".join(_RUNNER["log"].read_text().splitlines(keepends=True)[-12:])
-    except OSError:
-        pass
-    return {"run_id": _RUNNER["run_id"], "alive": _runner_alive(),
-            "exit_code": _RUNNER["proc"].poll(), "request": _RUNNER["request"],
-            "elapsed_s": round(time.time() - _RUNNER["started"]), "log_tail": tail}
+    return {"run_id": st.get("run_id"), "state": st.get("state"),
+            "alive": st.get("state") in RUNNER_BUSY,
+            "exit_code": st.get("exit_code"),
+            "request": json.loads(st.get("request") or "{}"),
+            "elapsed_s": round(time.time() - float(st.get("started") or time.time())),
+            "log_tail": "\n".join(client.lrange(RUNNER_LOG, -12, -1))}
 
 
 @app.get("/api/runs/{run_id}/position")

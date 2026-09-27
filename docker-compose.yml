@@ -101,6 +101,12 @@ services:
     <<: *app
     command: python -m edgecv.segmenter.main
 
+  # Runs the dashboard's "New run" requests (feed-sim → drain → segmenter → bench).
+  # Its own container so an API redeploy can't kill a run mid-feed; the API only queues.
+  runner:
+    <<: *app
+    command: python -m edgecv.runner --serve
+
   # Component 7 (read API) + component 8 (the product dashboard, served at /).
   api:
     <<: *app

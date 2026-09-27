@@ -57,7 +57,7 @@ dataset:
 # The long-lived services. feed-sim is left out: `docker compose up` would otherwise
 # replay the synthetic fixtures into the same database on every start.
 stack:
-	docker compose up -d --build redis postgres writer worker segmenter api dashboard
+	docker compose up -d --build redis postgres writer worker segmenter runner api dashboard
 
 # Replay the whole test split along the Sydney route, wait for the writer to land every
 # frame, segment, score against ground truth. Dashboard: http://localhost:8000

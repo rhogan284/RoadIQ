@@ -254,3 +254,15 @@ idempotent writes). They are decisions and observations, not T2 work done:
     time (409 while any run is feeding). A container restart stops a dashboard-started
     run. `scripts/e2e.py` shares the runner's drain logic. The "uploaded" stat chip now
     counts this run's own crops (measured on disk), not the shared store's total.
+11. **Runner moved to its own service; live "accounted for" fixed** (Ryan's 12 fps run).
+    - A redeploy of the API killed a dashboard-started run, because the runner lived in
+      the API container. `runner` is now its own Compose service reading a Redis queue;
+      the API only queues and reads `runner:status` / `runner:log`. Checked: the API
+      restarted mid-run and the feed carried on (105 → 186 frames published).
+    - While live, "frames accounted for" used landed frames as the denominator, so it read
+      100 % however far the pipeline fell behind. It now uses feed-sim's live counters
+      (`stats:{run}:published` / `:dropped`): accounted = (landed + dropped) / offered, with
+      in-flight shown separately. A finished run with known drops reads 100 % accounted,
+      and the drops show as dropped frames and metres not assessed.
+    - At 12 fps the workers land ~8 fps, so the 1,000-deep bus fills after ~4 min and the
+      producer starts refusing frames — seen live: 1,000 in flight, 77 dropped, 74.9 %.
