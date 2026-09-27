@@ -249,3 +249,133 @@ def build_loop(ways: list[Way], waypoints=DEMO_LOOP) -> list[LatLon]:
         elif not out or out[-1] != k:
             out.append(k)
     return [coords[k] for k in out]
+
+
+# ---------------------------------------------------------------------------- random route
+#: Dead-end chains up to this long are left out of the drive: a survey vehicle doesn't
+#: U-turn out of every short cul-de-sac, and each one would re-drive its own length. Most
+#: are stubs where the extract dropped the lane or unnamed road they really connect to.
+STUB_MAX_M = 150.0
+
+
+def _prune_stubs(adj, coords, max_m: float = STUB_MAX_M) -> None:
+    """Remove, in place, every dead-end chain (degree-1 node back to the first junction)
+    no longer than max_m."""
+    changed = True
+    while changed:
+        changed = False
+        for end in [n for n in list(adj) if len(adj[n]) == 1]:
+            chain, n, prev, length = [end], end, None, 0.0
+            while len(adj[n]) <= 2:
+                nxt = [m for m, _ in adj[n] if m != prev]
+                if not nxt:
+                    break
+                length += haversine_m(coords[n], coords[nxt[0]])
+                prev, n = n, nxt[0]
+                chain.append(n)
+                if length > max_m:
+                    break
+            if length > max_m or len(adj[n]) <= 2:
+                continue                        # long street, or an isolated segment
+            for a, b in zip(chain, chain[1:]):
+                adj[a] = [(m, c) for m, c in adj[a] if m != b]
+                adj[b] = [(m, c) for m, c in adj[b] if m != a]
+            for x in chain[:-1]:
+                if not adj[x]:
+                    del adj[x]
+            changed = True
+
+
+def build_random_route(ways: list[Way], *, target_m: float, seed: int) -> list[LatLon]:
+    """A randomised survey drive over the council network, side streets included, that is
+    `target_m` long and re-drives as little road as it can.
+
+    At each junction the vehicle takes an undriven council street, picked at random but
+    weighted towards going straight (a survey driver works along a street, they don't zig-
+    zag every block). A dead end is the only place it U-turns. When no undriven street
+    leaves the junction, it takes the cheapest path (state roads cost ARTERIAL_COST, so
+    they are connectors only) to the nearest junction that has one. Seeded, so a run's
+    route can be regenerated from the seed recorded in survey_runs.config.
+    """
+    import heapq
+    import random
+    from math import atan2, cos, radians, sin
+
+    rng = random.Random(seed)
+    adj, coords = _graph(ways)
+    _prune_stubs(adj, coords)
+    council_edges: set[frozenset] = set()
+    for w in ways:
+        if w.council:
+            for a, b in zip(w.points, w.points[1:]):
+                if _key(a) != _key(b):
+                    council_edges.add(frozenset((_key(a), _key(b))))
+    comp = set(_largest_component(adj))
+    untravelled = {e for e in council_edges if e <= comp}
+
+    def bearing(a, b) -> float:
+        (la1, lo1), (la2, lo2) = coords[a], coords[b]
+        y = sin(radians(lo2 - lo1)) * cos(radians(la2))
+        x = cos(radians(la1)) * sin(radians(la2)) - sin(radians(la1)) * cos(radians(la2)) * cos(radians(lo2 - lo1))
+        return atan2(y, x)
+
+    def turn(prev, here, nxt) -> float:
+        d = abs(bearing(prev, here) - bearing(here, nxt))
+        return min(d, 2 * 3.141592653589793 - d)          # 0 = straight on
+
+    starts = sorted(n for n in comp if any(frozenset((n, m)) in untravelled for m, _ in adj[n]))
+    here = rng.choice(starts)
+    route, prev, length = [here], None, 0.0
+
+    def step(n) -> None:
+        nonlocal here, prev, length
+        untravelled.discard(frozenset((here, n)))
+        length += haversine_m(coords[here], coords[n])
+        route.append(n)
+        prev, here = here, n
+
+    while length < target_m:
+        options = [m for m, _ in adj[here] if frozenset((here, m)) in untravelled and m != prev]
+        if not options and prev is not None and frozenset((here, prev)) in untravelled:
+            options = [prev]
+        if options:
+            def open_from(n, via) -> int:
+                """Undriven council edges reachable in one more step: a street that leads
+                into undriven road beats one that leads into driven road."""
+                return sum(1 for m, _ in adj[n]
+                           if m != via and frozenset((n, m)) in untravelled)
+            weights = []
+            for m in options:
+                w = 1.0 + 2.0 * open_from(m, here)
+                if prev is not None and turn(prev, here, m) < 0.5:
+                    w *= 3.0                              # keep working along the street
+                weights.append(w)
+            step(rng.choices(options, weights)[0])
+            continue
+        # Nothing undriven here: cheapest path to the nearest junction that has some.
+        dist, back, heap, found = {here: 0.0}, {here: None}, [(0.0, here)], None
+        while heap:
+            d, n = heapq.heappop(heap)
+            if d > dist[n]:
+                continue
+            if n != here and any(frozenset((n, m)) in untravelled for m, _ in adj[n]):
+                found = n
+                break
+            for m, c in adj[n]:
+                # Driven council road costs double on the way to new road, so the car
+                # takes an undriven street over a driven one when both get it there.
+                e = frozenset((n, m))
+                c2 = c * (2.0 if e in council_edges and e not in untravelled else 1.0)
+                if d + c2 < dist.get(m, float("inf")):
+                    dist[m], back[m] = d + c2, n
+                    heapq.heappush(heap, (d + c2, m))
+        if found is None:                   # network exhausted: start a fresh pass
+            untravelled = {e for e in council_edges if e <= comp}
+            continue
+        path, n = [], found
+        while n != here:
+            path.append(n)
+            n = back[n]
+        for n in reversed(path):
+            step(n)
+    return [coords[k] for k in route]

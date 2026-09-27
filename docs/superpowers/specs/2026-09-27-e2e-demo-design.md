@@ -237,3 +237,14 @@ idempotent writes). They are decisions and observations, not T2 work done:
 8. **Run control.** Pause / resume / cancel from the dashboard via a Redis key feed-sim
    checks before each frame. Resume restarts pacing (no catch-up burst). Cancel keeps what
    was sent; `make e2e` still drains, segments and scores the partial run.
+9. **Random route per run** (replaces the fixed loop as default; Ryan, same day). The loop
+   was 4.7 km against the ~10 km that 5,758 frames at 50 km/h / 8 fps need, so a run drove
+   it 2.1 times. `roads.build_random_route` draws a fresh seeded drive each run over the
+   council streets, side streets included: an undriven street at each junction (weighted to
+   carry straight on and towards more undriven road), a cheapest path to the nearest
+   undriven street when stuck (driven road ×2, state roads ×5), dead-end stubs ≤150 m left
+   out. Sized to the frame count, so it ends as the images do. Re-driven share 18–25 %
+   over five seeds (a street grid can't be covered without repeating some block; the loop
+   re-drove ~53 %). The planned route and seed are written to `survey_runs.config` before
+   the first frame; the map shows it dotted ahead of the car. `finish_run` now MERGES
+   config instead of replacing it, so the start-of-run write survives.

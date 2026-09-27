@@ -400,6 +400,15 @@ def position(run_id: str, trail: int = 150) -> dict:
             "trail": [[r["lat"], r["lon"]] for r in reversed(landed)]}
 
 
+@app.get("/api/runs/{run_id}/route")
+def planned_route(run_id: str) -> dict | None:
+    """The drive feed-sim planned for this run (written before its first frame), so the
+    map can show the road still ahead of the car. None for runs without a route."""
+    with db() as conn, conn.cursor() as cur:
+        run = _run(cur, run_id)
+    return (run["config"] or {}).get("planned_route")
+
+
 @app.get("/api/runs/{run_id}/track")
 def track(run_id: str, every: int = 3) -> dict:
     """The driven path so far, thinned to every `every`-th frame, split into stretches that

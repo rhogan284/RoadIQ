@@ -69,7 +69,8 @@ def test_rdd2022_through_every_component(rds, clean_db, mini_manifest, detector,
                     target_fps=FPS, prevalence=None, transport="reference")
 
     # 1. feed-sim: every image once, along the real street network
-    track = RouteTrack.from_network(DEFAULT_NETWORK, speed_mps=13.89, fps=FPS)
+    track = RouteTrack.from_network(DEFAULT_NETWORK, n_frames=40, seed=1,
+                                    speed_mps=13.89, fps=FPS)
     stats = run_feed(rds, manifest=mini_manifest, run_id=run_id, n_frames=0, fps=1000,
                      prevalence=0.0, maxlen=10_000, seed=1, stream="frames",
                      track=track, order="all")

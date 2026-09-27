@@ -73,8 +73,11 @@ class Repository:
                 cur.execute("UPDATE survey_runs SET ended_at=%s WHERE run_id=%s",
                             (ended_at, run_id))
             else:
+                # Merged, not replaced: feed-sim writes the planned route at start and the
+                # counts at the end, and the second write must not erase the first.
                 cur.execute(
-                    "UPDATE survey_runs SET ended_at=%s, config=%s WHERE run_id=%s",
+                    "UPDATE survey_runs SET ended_at=%s, config=config || %s::jsonb "
+                    "WHERE run_id=%s",
                     (ended_at, json.dumps(config), run_id),
                 )
 

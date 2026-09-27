@@ -17,7 +17,7 @@ from pathlib import Path
 
 from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix
 from edgecv.geo import LatLon, haversine_m
-from edgecv.roads import DEFAULT_NETWORK, build_loop, build_route, load_ways
+from edgecv.roads import DEFAULT_NETWORK, build_loop, build_random_route, build_route, load_ways
 
 
 def _bearing(a: LatLon, b: LatLon) -> float:
@@ -43,11 +43,18 @@ class RouteTrack:
         self.length_m = self._cum[-1]
 
     @classmethod
-    def from_network(cls, path: Path = DEFAULT_NETWORK, *, mode: str = "loop",
-                     **kw) -> RouteTrack:
-        """mode="loop": the main-road survey loop (closed, so laps join up).
+    def from_network(cls, path: Path = DEFAULT_NETWORK, *, mode: str = "random",
+                     n_frames: int | None = None, seed: int = 0, **kw) -> RouteTrack:
+        """mode="random": a fresh randomised drive over the council streets, sized so
+        `n_frames` at this speed and fps end as the route does (no second lap).
+        mode="loop": the fixed main-road survey loop (closed, so laps join up).
         mode="cover": the greedy every-street route (has jumps between road pieces)."""
         ways = load_ways(path)
+        if mode == "random":
+            if n_frames is None:
+                raise ValueError("random routes are sized from n_frames")
+            target = n_frames * kw["speed_mps"] / kw["fps"] + 20.0
+            return cls(build_random_route(ways, target_m=target, seed=seed), **kw)
         return cls(build_loop(ways) if mode == "loop" else build_route(ways), **kw)
 
     def fix_for(self, seq: int) -> Fix:

@@ -64,6 +64,39 @@ const carIcon = (heading) => L.divIcon({ className: "car", iconSize: [30, 30], i
     <path d="M0,-8 L6,6 L0,2.5 L-6,6 Z" fill="#fff"/></svg>` });
 let carMarker = null;
 
+// The planned drive: dashed ahead of the car, faint behind it. Split by distance along
+// the route (frame seq × metres per frame), which is exactly how feed-sim places the car.
+const planDone = L.polyline([], { color: "#0d6d92", weight: 3, opacity: 0.15, interactive: false }).addTo(map);
+const planAhead = L.polyline([], { color: "#0b5f80", weight: 4.5, opacity: 0.95, dashArray: "1 9",
+  lineCap: "round", interactive: false }).addTo(map);
+const hav = (a, b) => {
+  const r = Math.PI / 180, dla = (b[0] - a[0]) * r, dlo = (b[1] - a[1]) * r;
+  const h = Math.sin(dla / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dlo / 2) ** 2;
+  return 2 * 6371008.8 * Math.asin(Math.sqrt(h));
+};
+async function loadPlan() {
+  S.plan = null;
+  planDone.setLatLngs([]); planAhead.setLatLngs([]);
+  const p = await api(`/runs/${S.run}/route`).catch(() => null);
+  if (!p || !p.points || p.points.length < 2) return;
+  const cum = [0];
+  for (let i = 1; i < p.points.length; i++) cum.push(cum[i - 1] + hav(p.points[i - 1], p.points[i]));
+  S.plan = { ...p, cum, step: p.speed_mps / p.fps };
+  renderPlan(null);
+}
+function renderPlan(seq) {
+  const P = S.plan;
+  if (!P) return;
+  const d = seq == null ? 0 : (seq * P.step) % P.cum[P.cum.length - 1];
+  let i = 0;
+  while (i < P.cum.length - 2 && P.cum[i + 1] < d) i++;
+  const t = (d - P.cum[i]) / ((P.cum[i + 1] - P.cum[i]) || 1);
+  const a = P.points[i], b = P.points[i + 1];
+  const at = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  planDone.setLatLngs([...P.points.slice(0, i + 1), at]);
+  planAhead.setLatLngs(S.live ? [at, ...P.points.slice(i + 1)] : []);
+}
+
 // Where the vehicle drove but nothing was scored: state roads ("not ours") and turns,
 // using the segmenter's own snap, so the dashed line is exactly what the score ignored.
 const trackLayer = L.layerGroup().addTo(map);
@@ -88,6 +121,7 @@ async function renderPosition() {
   S.feedState = p.feed_state;
   renderControls();
   const c = p.car;
+  renderPlan(c.seq);
   const kmh = c.speed_mps == null ? "" : ` · ${Math.round(c.speed_mps * 3.6)} km/h`;
   const tip = `Vehicle · frame ${c.seq}${kmh}` +
     (p.landed_seq != null && c.source === "bus" ? ` · pipeline ${c.seq - p.landed_seq} frames behind` : "");
@@ -113,6 +147,7 @@ function renderLegend() {
     row(BAND_COLOUR.poor, `Poor&nbsp; ${km.poor.toFixed(1)} km`) +
     row(UNSURVEYED, `Not surveyed&nbsp; ${km.none.toFixed(1)} km`) +
     row(ARTERIAL, "Not ours (state road)") +
+    `<div><i style="background:repeating-linear-gradient(90deg,#0d6d92 0 2px,transparent 2px 7px)"></i>Planned route ahead</div>` +
     `<div><i style="background:repeating-linear-gradient(90deg,${OFF_COUNCIL} 0 5px,transparent 5px 9px)"></i>Driven, not surveyed</div>`;
 }
 
@@ -122,7 +157,7 @@ function renderMap(fit) {
     style: (f) => {
       const c = BAND_COLOUR[f.properties.condition_band];
       return c ? { color: c, weight: 6, opacity: 0.95 }
-               : { color: UNSURVEYED, weight: 5, opacity: 0.9, dashArray: "6 6" };
+               : { color: UNSURVEYED, weight: 4, opacity: 0.45, dashArray: "6 6" };
     },
     onEachFeature: (f, layer) => layer.on("click", () => selectSegment(f.properties.segment_id)),
   }).addTo(map);
@@ -383,6 +418,7 @@ async function loadRun(runId) {
   S.order.clear();
   await refresh(true);
   renderBench();
+  await loadPlan();
   renderPosition();
   renderTrack();
   logReset();

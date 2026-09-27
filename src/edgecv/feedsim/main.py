@@ -195,8 +195,12 @@ def main() -> None:
     ap.add_argument("--route", type=Path, default=None,
                     help="drive along this road-network GeoJSON instead of a straight "
                          "line (e.g. src/edgecv/roads/sydney_demo.geojson)")
-    ap.add_argument("--route-mode", choices=["loop", "cover"], default="loop",
-                    help="loop = main-road survey loop; cover = every street, with jumps")
+    ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random",
+                    help="random = a new randomised drive over the council streets each "
+                         "run, sized to the frame count; loop = the fixed main-road loop; "
+                         "cover = every street, with jumps")
+    ap.add_argument("--route-seed", type=int, default=None,
+                    help="fix the random route (default: a new one every run)")
     ap.add_argument("--source-kind", choices=["synthetic", "dataset-replay", "drive"],
                     default="synthetic")
     ap.add_argument("--no-gps", dest="gps", action="store_false", default=True,
@@ -213,10 +217,16 @@ def main() -> None:
     if not args.manifest.exists():
         raise SystemExit(f"manifest {args.manifest} not found — for RDD2022 run "
                          f"`make dataset` first")
+    route_seed = None
     if not args.gps:
         track = None
     elif args.route:
+        clean, defect = load_pools(args.manifest)
+        n_planned = len(clean) + len(defect) if args.order == "all" else args.frames
+        route_seed = (args.route_seed if args.route_seed is not None
+                      else random.SystemRandom().randrange(1_000_000))
         track = RouteTrack.from_network(args.route, mode=args.route_mode,
+                                        n_frames=n_planned, seed=route_seed,
                                         speed_mps=args.speed_mps,
                                         fps=args.fps, accuracy_m=args.gps_accuracy_m)
     else:
@@ -240,7 +250,15 @@ def main() -> None:
                         started_at=datetime.now(timezone.utc),
                         source_kind=args.source_kind, source_ref=str(args.manifest),
                         target_fps=args.fps, prevalence=args.prevalence,
-                        transport=args.transport)
+                        transport=args.transport,
+                        # Written BEFORE the first frame, so the dashboard can draw the
+                        # whole planned drive while the car is still on it.
+                        config={"planned_route": {
+                            "mode": args.route_mode, "seed": route_seed,
+                            "length_m": round(track.length_m, 1),
+                            "speed_mps": args.speed_mps, "fps": args.fps,
+                            "points": [[round(la, 6), round(lo, 6)] for la, lo in track.route],
+                        }} if isinstance(track, RouteTrack) else None)
 
         stats = run_feed(client, manifest=args.manifest, run_id=run_id,
                          n_frames=args.frames, fps=args.fps,
@@ -256,6 +274,7 @@ def main() -> None:
         if isinstance(track, RouteTrack):
             config["gps_track"] = {
                 "kind": "route", "network": str(args.route), "mode": args.route_mode,
+                "seed": route_seed,
                 "route_length_m": round(track.length_m, 1),
                 "speed_mps": args.speed_mps, "fps": args.fps,
                 "accuracy_m": args.gps_accuracy_m,

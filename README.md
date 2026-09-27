@@ -35,7 +35,10 @@ against RDD2022 ground truth into `bench_runs`. `FPS=12 make e2e` to push harder
 While a run is live the dashboard refreshes every 5 s and follows the newest run. The
 vehicle marker (1 s) is the newest frame on the bus, and its trail is what has landed, so
 the gap is the pipeline's lag. Click **● LIVE**, or open `/static/index.html#log`, for a
-per-frame log in landing order. The drive is a closed 4.7 km main-road loop
+per-frame log in landing order. Each run drives a **new random route** over the council streets, side streets included,
+sized so the images run out as the route does (`--route-seed N` to repeat one, `--route-mode
+loop` for the old fixed loop); the dotted blue line on the map is the road still ahead.
+The fixed alternative is a closed 4.7 km main-road loop
 (`roads.DEMO_LOOP`), 72 % on council roads, crossing state arterials (drawn grey, "not
 ours", never scored) only where the council network has no way round. `--route-mode cover`
 restores the old drive over every street. Grey dashed legs are where the car drove but
