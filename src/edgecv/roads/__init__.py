@@ -26,6 +26,8 @@ class Way:
     name: str
     highway: str
     points: tuple[LatLon, ...]      # (lat, lon)
+    #: False for state arterials: driven, never segmented or scored ("not ours").
+    council: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +45,8 @@ def load_ways(path: Path = DEFAULT_NETWORK) -> list[Way]:
     fc = json.loads(Path(path).read_text())
     return [Way(osm_id=f["properties"]["osm_id"], name=f["properties"]["name"],
                 highway=f["properties"]["highway"],
-                points=tuple((lat, lon) for lon, lat in f["geometry"]["coordinates"]))
+                points=tuple((lat, lon) for lon, lat in f["geometry"]["coordinates"]),
+                council=f["properties"].get("council", True))
             for f in fc["features"]]
 
 
@@ -78,7 +81,7 @@ def cut_way(way: Way, seg_m: float = SEGMENT_M) -> list[Segment]:
 
 
 def segments(ways: list[Way]) -> list[Segment]:
-    return [s for w in ways for s in cut_way(w)]
+    return [s for w in ways if w.council for s in cut_way(w)]
 
 
 def _key(p: LatLon) -> tuple[float, float]:
@@ -136,3 +139,113 @@ def build_route(ways: list[Way]) -> list[LatLon]:
             route.extend(coords[n] for n in reversed(path))
         here = _key(route[-1])
     return route
+
+
+# ---------------------------------------------------------------------------- loop route
+#: Cost multiplier per road class: the loop prefers the bigger council roads and uses
+#: residential streets only as connectors. (Broadway, Harris St, City Rd and Parramatta Rd
+#: are state arterials, excluded from the extract — not the council's to survey.)
+CLASS_COST = {"secondary": 1.0, "tertiary": 1.0, "unclassified": 1.4, "residential": 3.0}
+#: Arterials connect the council's pieces but are not surveyed, so they cost more than a
+#: council main road: the loop uses one only when there is no council way round.
+ARTERIAL_COST = 5.0
+
+#: The demo survey loop, clockwise from Glebe Point Road: (lat, lon) waypoints, each
+#: snapped to the nearest road node. Chosen on the bigger roads around the extract's edge
+#: so the car drives a ring an officer would recognise, not a space-filling scribble.
+DEMO_LOOP = (
+    (-33.8830, 151.1900),   # Glebe Point Road
+    (-33.8795, 151.1905),   # St Johns Road
+    (-33.8775, 151.1935),   # Wentworth Park Road
+    (-33.8800, 151.2003),   # Systrum Street
+    (-33.8829, 151.2000),   # Thomas Street
+    (-33.8866, 151.2012),   # Wellington Street
+    (-33.8905, 151.1950),   # Shepherd Street (south)
+    (-33.8845, 151.1950),   # Bay Street
+)
+
+
+def _graph(ways: list[Way]):
+    adj: dict[tuple, list[tuple[tuple, float]]] = defaultdict(list)
+    coords: dict[tuple, LatLon] = {}
+    _graph.council_nodes = set()
+    for w in ways:
+        if w.council:
+            _graph.council_nodes.update(_key(p) for p in w.points)
+        f = CLASS_COST.get(w.highway, 3.0) if w.council else ARTERIAL_COST
+        for a, b in zip(w.points, w.points[1:]):
+            ka, kb = _key(a), _key(b)
+            if ka == kb:
+                continue
+            coords[ka], coords[kb] = a, b
+            cost = haversine_m(a, b) * f
+            adj[ka].append((kb, cost))
+            adj[kb].append((ka, cost))
+    return adj, coords
+
+
+def _shortest(adj, src, dst) -> list[tuple]:
+    import heapq
+    dist, prev, heap = {src: 0.0}, {src: None}, [(0.0, src)]
+    while heap:
+        d, n = heapq.heappop(heap)
+        if n == dst:
+            break
+        if d > dist[n]:
+            continue
+        for m, c in adj[n]:
+            nd = d + c
+            if nd < dist.get(m, float("inf")):
+                dist[m], prev[m] = nd, n
+                heapq.heappush(heap, (nd, m))
+    if dst not in prev:
+        raise ValueError(f"no road path between {src} and {dst}")
+    path, n = [], dst
+    while n is not None:
+        path.append(n)
+        n = prev[n]
+    return path[::-1]
+
+
+def _largest_component(adj) -> list[tuple]:
+    seen: set = set()
+    best: list[tuple] = []
+    for start in adj:
+        if start in seen:
+            continue
+        comp, stack = [], [start]
+        seen.add(start)
+        while stack:
+            n = stack.pop()
+            comp.append(n)
+            for m, _ in adj[n]:
+                if m not in seen:
+                    seen.add(m)
+                    stack.append(m)
+        if len(comp) > len(best):
+            best = comp
+    return best
+
+
+def build_loop(ways: list[Way], waypoints=DEMO_LOOP) -> list[LatLon]:
+    """A closed survey loop through `waypoints` along real roads, preferring main roads.
+
+    Closed on purpose: when feed-sim runs past the end it starts the next lap from where
+    it already is, so the car never jumps. Back-and-forth spikes (A→B→A, from a waypoint
+    that snapped onto a side stub) are removed, so the car never U-turns mid-street.
+    """
+    adj, coords = _graph(ways)
+    # Waypoints go on council roads (they are what is being surveyed) inside the largest
+    # connected piece (a waypoint on an island would be unreachable).
+    nodes = [n for n in _largest_component(adj) if n in _graph.council_nodes]
+    snap = [min(nodes, key=lambda n: haversine_m(coords[n], wp)) for wp in waypoints]
+    keys: list[tuple] = [snap[0]]
+    for a, b in zip(snap, snap[1:] + snap[:1]):
+        keys.extend(_shortest(adj, a, b)[1:])
+    out: list[tuple] = []
+    for k in keys:
+        if len(out) >= 2 and out[-2] == k:
+            out.pop()                       # A→B→A: drop the spike
+        elif not out or out[-1] != k:
+            out.append(k)
+    return [coords[k] for k in out]

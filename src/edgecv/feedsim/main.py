@@ -147,6 +147,8 @@ def main() -> None:
     ap.add_argument("--route", type=Path, default=None,
                     help="drive along this road-network GeoJSON instead of a straight "
                          "line (e.g. src/edgecv/roads/sydney_demo.geojson)")
+    ap.add_argument("--route-mode", choices=["loop", "cover"], default="loop",
+                    help="loop = main-road survey loop; cover = every street, with jumps")
     ap.add_argument("--source-kind", choices=["synthetic", "dataset-replay", "drive"],
                     default="synthetic")
     ap.add_argument("--no-gps", dest="gps", action="store_false", default=True,
@@ -166,7 +168,8 @@ def main() -> None:
     if not args.gps:
         track = None
     elif args.route:
-        track = RouteTrack.from_network(args.route, speed_mps=args.speed_mps,
+        track = RouteTrack.from_network(args.route, mode=args.route_mode,
+                                        speed_mps=args.speed_mps,
                                         fps=args.fps, accuracy_m=args.gps_accuracy_m)
     else:
         track = SyntheticTrack(
@@ -202,7 +205,7 @@ def main() -> None:
                         "raw_bytes_offered": stats.raw_bytes, "order": args.order}
         if isinstance(track, RouteTrack):
             config["gps_track"] = {
-                "kind": "route", "network": str(args.route),
+                "kind": "route", "network": str(args.route), "mode": args.route_mode,
                 "route_length_m": round(track.length_m, 1),
                 "speed_mps": args.speed_mps, "fps": args.fps,
                 "accuracy_m": args.gps_accuracy_m,

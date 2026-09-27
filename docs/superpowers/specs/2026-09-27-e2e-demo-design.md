@@ -222,3 +222,8 @@ idempotent writes). They are decisions and observations, not T2 work done:
    run beside a long-lived dev stack.
 5. **`tests/__init__.py` added** — ultralytics 8.4.x installs a top-level `tests` package
    that shadowed the namespace-package test directory.
+6. **Live mode, vehicle marker, frame log, main-road loop** (added on request, same day).
+   Ryan chose fixed speed + fixed fps (images evenly spaced) and a main-road loop over an
+   every-street route. The council network is 20 disconnected pieces without the state
+   arterials, so arterials are in the network file as `council: false`: driven, drawn grey,
+   never segmented or scored.

@@ -49,6 +49,38 @@ legend.onAdd = () => {
 };
 legend.addTo(map);
 
+// State arterials: driven, never scored. Drawn once, under everything else.
+const ARTERIAL = "#b9c2cb";
+api("/network").then((fc) => L.geoJSON(fc, {
+  style: { color: ARTERIAL, weight: 7, opacity: 0.8 }, interactive: false,
+}).addTo(map).bringToBack()).catch(() => {});
+
+// The vehicle: an arrow at the newest published frame, rotated to its heading, and the
+// trail of frames that have landed. The gap between them is the pipeline's lag.
+const trailLine = L.polyline([], { color: "#0d6d92", weight: 4, opacity: 0.55 }).addTo(map);
+const carIcon = (heading) => L.divIcon({ className: "car", iconSize: [30, 30], iconAnchor: [15, 15],
+  html: `<svg width="30" height="30" viewBox="-15 -15 30 30" style="transform:rotate(${heading || 0}deg)">
+    <circle r="13" fill="#0d6d92" stroke="#fff" stroke-width="2.5"/>
+    <path d="M0,-8 L6,6 L0,2.5 L-6,6 Z" fill="#fff"/></svg>` });
+let carMarker = null;
+
+async function renderPosition() {
+  if (!S.run) return;
+  const p = await api(`/runs/${S.run}/position`).catch(() => null);
+  if (!p || !p.car) { if (carMarker) { carMarker.remove(); carMarker = null; } trailLine.setLatLngs([]); return; }
+  const c = p.car;
+  const kmh = c.speed_mps == null ? "" : ` · ${Math.round(c.speed_mps * 3.6)} km/h`;
+  const tip = `Vehicle · frame ${c.seq}${kmh}` +
+    (p.landed_seq != null && c.source === "bus" ? ` · pipeline ${c.seq - p.landed_seq} frames behind` : "");
+  if (!carMarker) {
+    carMarker = L.marker([c.lat, c.lon], { icon: carIcon(c.heading_deg), zIndexOffset: 1000 })
+      .bindTooltip(tip, { direction: "top", offset: [0, -14] }).addTo(map);
+  } else {
+    carMarker.setLatLng([c.lat, c.lon]).setIcon(carIcon(c.heading_deg)).setTooltipContent(tip);
+  }
+  trailLine.setLatLngs(p.trail);
+}
+
 function renderLegend() {
   const km = { good: 0, fair: 0, poor: 0, none: 0 };
   for (const f of S.geo.features) {
@@ -60,7 +92,8 @@ function renderLegend() {
     row(BAND_COLOUR.good, `Good&nbsp; ${km.good.toFixed(1)} km`) +
     row(BAND_COLOUR.fair, `Fair&nbsp; ${km.fair.toFixed(1)} km`) +
     row(BAND_COLOUR.poor, `Poor&nbsp; ${km.poor.toFixed(1)} km`) +
-    row(UNSURVEYED, `Not surveyed&nbsp; ${km.none.toFixed(1)} km`);
+    row(UNSURVEYED, `Not surveyed&nbsp; ${km.none.toFixed(1)} km`) +
+    row(ARTERIAL, "Not ours (state road)");
 }
 
 function renderMap(fit) {
@@ -330,6 +363,8 @@ async function loadRun(runId) {
   S.order.clear();
   await refresh(true);
   renderBench();
+  renderPosition();
+  logReset();
   if (S.worklist.length) selectSegment(S.worklist[0].segment_id);
 }
 
@@ -338,6 +373,7 @@ async function loadRun(runId) {
 // segment and the open defect are kept), and a run that starts later is followed
 // automatically unless the viewer has picked an older run from the menu.
 const LIVE_MS = 5000;
+const CAR_MS = 1000;
 S.follow = true;
 S.busy = false;
 
@@ -351,6 +387,7 @@ function renderRunOptions(runs) {
 
 function renderLive(run) {
   const live = run && !run.ended_at;
+  S.live = !!live;
   const badge = $("live");
   badge.hidden = !live;
   if (live) badge.textContent = `● LIVE · ${S.summary.frames_ingested.toLocaleString()} frames landed`;
@@ -379,6 +416,74 @@ async function tick() {
   }
 }
 
+// ------------------------------------------------------------------ frame log
+// One line per frame, in the order frames LANDED in Postgres (writer insert order).
+const LOG = { cursor: null, paused: false, n: 0, busy: false, times: [], html: [] };
+const LOG_MAX_LINES = 3000;
+const pad = (v, n) => String(v).padEnd(n);
+const fmtTime = (s) => { const d = new Date(s);
+  return d.toLocaleTimeString("en-AU", { hour12: false }) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+
+function logReset() {
+  Object.assign(LOG, { cursor: null, n: 0, times: [], html: [] });
+  $("log-body").textContent = "";
+}
+
+function logLine(l) {
+  const dets = l.detections || [];
+  const [lvl, cls] = l.status !== "ok" ? ["ERROR", "err"] : dets.length ? ["DEFECT", "det"] : ["CLEAN", "ok"];
+  const level = `<span class="${cls}">${pad(lvl, 6)}</span>`;
+  const pos = l.lat == null ? "no-fix".padEnd(21) : `${l.lat.toFixed(5)},${l.lon.toFixed(5)}`;
+  const kmh = l.speed_mps == null ? "  –  " : `${Math.round(l.speed_mps * 3.6)}km/h`;
+  const found = l.status !== "ok" ? `<span class="err">${esc(l.error || l.status)}</span>`
+    : dets.length ? `<span class="det">${dets.length} det</span>  ` +
+      dets.map((d) => `<span class="cls">${d.c}</span>:${Number(d.p).toFixed(2)}`).join(" ")
+    : `<span class="dim">no damage</span>`;
+  return `<span class="t">${fmtTime(l.captured_at)}</span> ${level} ` +
+    `seq=${String(l.seq).padStart(5, "0")}  ${pad(l.worker_id.replace(/^worker-/, "w-").slice(0, 8), 8)}  ` +
+    `${String(Math.round(l.latency_ms)).padStart(4)}ms  ${pos}  ${pad(kmh, 7)}  ` +
+    `<span class="dim">${pad(esc(l.source_ref), 26)}</span>  ${found}`;
+}
+
+async function logPoll() {
+  if (LOG.busy || !S.run) return;
+  LOG.busy = true;
+  try {
+    const q = LOG.cursor == null ? "limit=200" : `after_id=${LOG.cursor}&limit=500`;
+    const r = await api(`/runs/${S.run}/log?${q}`);
+    const body = $("log-body");
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    if (r.lines.length) {
+      const fresh = r.lines.map(logLine);
+      LOG.html.push(...fresh);
+      LOG.n += r.lines.length;
+      if (LOG.html.length > LOG_MAX_LINES) {
+        // Drop the oldest so a 5,758-frame run doesn't grow the DOM without bound.
+        LOG.html = LOG.html.slice(-LOG_MAX_LINES);
+        body.innerHTML = LOG.html.join("\n") + "\n";
+      } else {
+        body.insertAdjacentHTML("beforeend", fresh.join("\n") + "\n");
+      }
+      // Rate from the frames' own clock, not from poll timing: frames captured in the
+      // newest 10 s of what has landed.
+      LOG.times.push(...r.lines.map((l) => Date.parse(l.captured_at)));
+      const newest = LOG.times[LOG.times.length - 1];
+      LOG.times = LOG.times.filter((t) => newest - t <= 10000);
+      if (atBottom) body.scrollTop = body.scrollHeight;
+    }
+    LOG.cursor = r.cursor;
+    const span = LOG.times.length > 1 ? (LOG.times[LOG.times.length - 1] - Math.min(...LOG.times)) / 1000 : 0;
+    const rate = span > 0 ? (LOG.times.length - 1) / span : 0;
+    $("log-meta").textContent = `run ${S.run.slice(0, 8)} · ${LOG.n.toLocaleString()} lines` +
+      (S.live ? ` · ~${rate.toFixed(1)} frames/s landing` : " · run finished") +
+      (LOG.paused ? " · paused" : "");
+  } catch (e) {
+    $("log-meta").textContent = `log unavailable: ${e.message}`;
+  } finally {
+    LOG.busy = false;
+  }
+}
+
 async function boot() {
   $("btn-confirm").onclick = () => review("confirmed");
   $("btn-reject").onclick = () => review("rejected");
@@ -399,11 +504,22 @@ async function boot() {
     loadRun(sel.value);
   };
   setInterval(tick, LIVE_MS);
+  setInterval(() => { if (S.live && !document.hidden) renderPosition(); }, CAR_MS);
+  setInterval(() => { if (!$("log").hidden && !LOG.paused) logPoll(); }, 1000);
+  $("live").onclick = () => { $("log").hidden = !$("log").hidden; if (!$("log").hidden) logPoll(); };
+  $("log-close").onclick = () => { $("log").hidden = true; };
+  $("log-clear").onclick = () => { $("log-body").textContent = ""; LOG.n = 0; LOG.html = []; };
+  $("log-pause").onclick = () => {
+    LOG.paused = !LOG.paused;
+    $("log-pause").textContent = LOG.paused ? "Resume" : "Pause";
+    if (!LOG.paused) logPoll();
+  };
   const first = runs[0];
   if (!first) { $("ev-caption").textContent = "No survey runs yet — run make e2e. Waiting…"; return; }
   sel.value = first.run_id;
   await loadRun(first.run_id);
   renderLive(first);
+  if (location.hash === "#log") { $("log").hidden = false; logPoll(); }   // deep link for demos
 }
 
 boot().catch((e) => { $("ev-caption").textContent = `Could not load: ${e.message}`; });

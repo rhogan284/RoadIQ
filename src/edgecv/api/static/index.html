@@ -18,7 +18,7 @@
       <span class="muted">roadiq.local/network · run</span>
       <select id="run-select" aria-label="Survey run"></select>
     </label>
-    <span id="live" class="live" hidden></span>
+    <button id="live" class="live" hidden title="Show frames as they land"></button>
     <span id="chrome-meta" class="chrome-meta"></span>
   </header>
 
@@ -81,6 +81,19 @@
       </details>
     </section>
   </main>
+
+  <section id="log" class="log" hidden aria-label="Frame log">
+    <header class="log-head">
+      <b>Frame log</b>
+      <span id="log-meta" class="log-meta"></span>
+      <span class="log-actions">
+        <button id="log-pause" class="log-btn">Pause</button>
+        <button id="log-clear" class="log-btn">Clear</button>
+        <button id="log-close" class="log-btn" aria-label="Close log">✕</button>
+      </span>
+    </header>
+    <pre id="log-body" class="log-body"></pre>
+  </section>
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="app.js"></script>

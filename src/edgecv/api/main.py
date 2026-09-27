@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 import psycopg
+import redis
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,8 @@ from pydantic import BaseModel
 from edgecv.bench.collect import run_coverage
 from edgecv.blobstore.store import BlobStore
 from edgecv.config import Settings
+from edgecv.contracts.frame import FrameEnvelope
+from edgecv.roads import load_ways
 from edgecv.segmenter.index import AUTO_ACCEPT_CONF
 from edgecv.segmenter.main import segment_run
 from edgecv.worker.main import CROP_FMT
@@ -318,6 +321,82 @@ def bench(run_id: str) -> dict | None:
             WHERE r.run_id = %s""", (run_id,))
         found = rows(cur)
     return found[0] if found else None
+
+
+@app.get("/api/network")
+def network() -> dict:
+    """The roads the vehicle can drive that are NOT the council's (state arterials) —
+    drawn grey on the map, never segmented or scored (the mock-up's "Not ours")."""
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"name": w.name, "highway": w.highway},
+         "geometry": {"type": "LineString",
+                      "coordinates": [[lon, lat] for lat, lon in w.points]}}
+        for w in load_ways() if not w.council]}
+
+
+def _latest_published(run_id: str) -> dict | None:
+    """The newest frame feed-sim has put on the bus for this run: where the vehicle IS,
+    as opposed to where the pipeline has caught up to. None if the bus has moved on."""
+    try:
+        client = redis.from_url(SETTINGS.redis_url, decode_responses=False)
+        for _id, fields in client.xrevrange(SETTINGS.frames_stream, count=1):
+            env = FrameEnvelope.from_fields(fields)
+            if env.run_id == run_id and env.lat is not None:
+                return {"seq": env.seq, "lat": env.lat, "lon": env.lon,
+                        "heading_deg": env.heading_deg, "speed_mps": env.speed_mps,
+                        "captured_at": env.captured_at, "source": "bus"}
+    except (redis.RedisError, ValueError, AttributeError):
+        pass
+    return None
+
+
+@app.get("/api/runs/{run_id}/position")
+def position(run_id: str, trail: int = 150) -> dict:
+    """Car marker + recent track. The car comes from the bus when the run is live, and
+    from the last frame that landed in Postgres otherwise; the trail is always landed
+    frames, so the gap between car and trail is the pipeline's lag, visibly."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT seq, lat, lon, heading_deg::float8 AS heading_deg,
+                   speed_mps::float8 AS speed_mps, captured_at
+            FROM frames WHERE run_id = %s AND lat IS NOT NULL
+            ORDER BY seq DESC LIMIT %s""", (run_id, trail))
+        landed = rows(cur)
+    car = _latest_published(run_id) or (landed[0] | {"source": "landed"} if landed else None)
+    return {"car": car, "landed_seq": landed[0]["seq"] if landed else None,
+            "trail": [[r["lat"], r["lon"]] for r in reversed(landed)]}
+
+
+@app.get("/api/runs/{run_id}/log")
+def frame_log(run_id: str, after_id: int | None = None, limit: int = 200) -> dict:
+    """Frames in the order they LANDED (inference_id is the writer's insert order), with
+    what the worker found on each. With `after_id`: the oldest `limit` after the cursor,
+    so a viewer paging forward never skips a frame. Without: the newest `limit`."""
+    limit = min(limit, 1000)
+    forward = after_id is not None
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT i.inference_id, i.seq, i.worker_id, i.status, i.error,
+                   i.latency_ms::float8 AS latency_ms, i.started_at, f.captured_at,
+                   f.lat, f.lon, f.speed_mps::float8 AS speed_mps, f.source_ref,
+                   coalesce((SELECT json_agg(json_build_object(
+                               'c', d.defect_class, 'p', round(d.confidence, 2))
+                               ORDER BY d.confidence DESC)
+                             FROM detections d WHERE d.inference_id = i.inference_id),
+                            '[]'::json) AS detections
+            FROM inferences i
+            JOIN frames f ON f.run_id = i.run_id AND f.seq = i.seq
+                         AND f.captured_at = i.captured_at
+            WHERE i.run_id = %(run)s
+              AND (%(after)s::bigint IS NULL OR i.inference_id > %(after)s)
+            ORDER BY i.inference_id {"ASC" if forward else "DESC"} LIMIT %(limit)s""",
+            {"run": run_id, "after": after_id, "limit": limit})
+        lines = rows(cur)
+    if not forward:
+        lines.reverse()
+    for ln in lines:
+        ln["source_ref"] = ln["source_ref"].rsplit("/", 1)[-1]
+    return {"lines": lines, "cursor": lines[-1]["inference_id"] if lines else after_id}
 
 
 app.mount("/static", StaticFiles(directory=STATIC, html=True), name="static")

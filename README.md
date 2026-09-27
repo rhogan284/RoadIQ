@@ -32,6 +32,14 @@ segmenter (detections → `defect_instances` → `segment_condition`) and scores
 against RDD2022 ground truth into `bench_runs`. `FPS=12 make e2e` to push harder;
 `WORKERS=3`, `DETECTOR=threshold`, and `YOLO_WEIGHTS=weights/<file>.pt` are the knobs.
 
+While a run is live the dashboard refreshes every 5 s and follows the newest run. The
+vehicle marker (1 s) is the newest frame on the bus, and its trail is what has landed, so
+the gap is the pipeline's lag. Click **● LIVE**, or open `/static/index.html#log`, for a
+per-frame log in landing order. The drive is a closed 4.7 km main-road loop
+(`roads.DEMO_LOOP`), 72 % on council roads, crossing state arterials (drawn grey, "not
+ours", never scored) only where the council network has no way round. `--route-mode cover`
+restores the old drive over every street.
+
 Your existing `make up` stack already on 5432/6379? Run the demo beside it:
 `COMPOSE_PROJECT_NAME=roadiq-e2e PG_PORT=55432 REDIS_PORT=56379 PG_DSN=postgresql://edgecv:edgecv@localhost:55432/edgecv REDIS_URL=redis://localhost:56379/0 make e2e`.
 

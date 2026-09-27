@@ -17,7 +17,7 @@ from pathlib import Path
 
 from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix
 from edgecv.geo import LatLon, haversine_m
-from edgecv.roads import DEFAULT_NETWORK, build_route, load_ways
+from edgecv.roads import DEFAULT_NETWORK, build_loop, build_route, load_ways
 
 
 def _bearing(a: LatLon, b: LatLon) -> float:
@@ -43,8 +43,12 @@ class RouteTrack:
         self.length_m = self._cum[-1]
 
     @classmethod
-    def from_network(cls, path: Path = DEFAULT_NETWORK, **kw) -> RouteTrack:
-        return cls(build_route(load_ways(path)), **kw)
+    def from_network(cls, path: Path = DEFAULT_NETWORK, *, mode: str = "loop",
+                     **kw) -> RouteTrack:
+        """mode="loop": the main-road survey loop (closed, so laps join up).
+        mode="cover": the greedy every-street route (has jumps between road pieces)."""
+        ways = load_ways(path)
+        return cls(build_loop(ways) if mode == "loop" else build_route(ways), **kw)
 
     def fix_for(self, seq: int) -> Fix:
         d = (self.speed_mps * seq / self.fps) % self.length_m
