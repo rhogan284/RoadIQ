@@ -53,27 +53,48 @@ def load_segments(conn: psycopg.Connection, *, authority_id: str,
     return len(new)
 
 
-# Each fix is snapped to the nearest segment of the run's authority within SNAP_M, and
-# its position along that segment is kept for clustering. Frames are read once and
-# joined to detections in Python, not per detection in SQL.
+#: A frame snaps to a segment only if the vehicle is driving ALONG it: heading within
+#: this many degrees of the street's direction (either way). Without it, a frame on
+#: Harris St passing a side-street mouth is within SNAP_M of that side street and its
+#: defects land on the wrong road — found on the first loop run, 2026-09-27.
+HEADING_TOL_DEG = 30.0
+
+# The snap, as a LATERAL subquery over a frame alias `f` (lat, lon, heading_deg). Shared
+# with the read API's track endpoint so the map and the scores can never disagree about
+# which frames were on a council road. Parameters: %(authority)s, %(snap)s, %(tol)s.
+SNAP_LATERAL = """
+LEFT JOIN LATERAL (
+    SELECT sg.segment_id, loc.frac * sg.length_m AS along_m
+    FROM segments sg
+    CROSS JOIN LATERAL (
+        SELECT ST_LineLocatePoint(sg.geom::geometry,
+                                  ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)) AS frac
+    ) loc
+    CROSS JOIN LATERAL (
+        -- the street's bearing at the snap point, from two points 5 percent either side
+        SELECT degrees(ST_Azimuth(
+                   ST_LineInterpolatePoint(sg.geom::geometry, greatest(0, loc.frac - 0.05))::geography,
+                   ST_LineInterpolatePoint(sg.geom::geometry, least(1, loc.frac + 0.05))::geography)) AS az
+    ) dir
+    WHERE sg.authority_id = %(authority)s
+      AND ST_DWithin(sg.geom, ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)::geography,
+                     %(snap)s)
+      AND (f.heading_deg IS NULL OR dir.az IS NULL
+           OR abs(((dir.az - f.heading_deg + 540)::numeric %% 360) - 180) >= 180 - %(tol)s
+           OR abs(((dir.az - f.heading_deg + 540)::numeric %% 360) - 180) <= %(tol)s)
+    ORDER BY sg.geom <-> ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)::geography
+    LIMIT 1
+) s ON TRUE
+"""
+
+# Frames are read once and joined to detections in Python, not per detection in SQL.
 _FRAMES_SQL = """
 SELECT f.seq, f.captured_at, f.width, f.height, f.speed_mps,
        s.segment_id, s.along_m, f.lat, f.lon,
        EXISTS (SELECT 1 FROM inferences i WHERE i.run_id = f.run_id AND i.seq = f.seq
                  AND i.captured_at = f.captured_at AND i.status = 'ok') AS processed
 FROM frames f
-LEFT JOIN LATERAL (
-    SELECT sg.segment_id,
-           ST_LineLocatePoint(sg.geom::geometry,
-                              ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)) * sg.length_m
-               AS along_m
-    FROM segments sg
-    WHERE sg.authority_id = %(authority)s
-      AND ST_DWithin(sg.geom, ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)::geography,
-                     %(snap)s)
-    ORDER BY sg.geom <-> ST_SetSRID(ST_MakePoint(f.lon, f.lat), 4326)::geography
-    LIMIT 1
-) s ON TRUE
+""" + SNAP_LATERAL + """
 WHERE f.run_id = %(run)s AND f.lat IS NOT NULL
 """
 
@@ -125,7 +146,8 @@ def segment_run(conn: psycopg.Connection, run_id: str) -> dict:
         authority, source_kind, fps = cur.fetchone()
         merge_m = REPLAY_MERGE_M if source_kind == "dataset-replay" else DRIVE_MERGE_M
 
-        cur.execute(_FRAMES_SQL, {"authority": authority, "snap": SNAP_M, "run": run_id})
+        cur.execute(_FRAMES_SQL, {"authority": authority, "snap": SNAP_M,
+                                  "tol": HEADING_TOL_DEG, "run": run_id})
         frames = {r[0]: r for r in cur.fetchall()}
         cur.execute(_DETECTIONS_SQL, (run_id,))
         per_group: dict[tuple, list[Obs]] = defaultdict(list)

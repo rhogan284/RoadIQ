@@ -29,7 +29,7 @@ from edgecv.contracts.frame import FrameEnvelope
 from edgecv.db.migrate import apply_migrations
 from edgecv.db.repository import Repository
 from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix, SyntheticTrack
-from edgecv.feedsim.prevalence import PrevalenceSampler, pace_deadlines
+from edgecv.feedsim.prevalence import PrevalenceSampler
 from edgecv.feedsim.route import RouteTrack
 
 #: Sydney CBD, George and Market. An arbitrary but plausible survey origin.
@@ -47,6 +47,26 @@ class FeedStats:
     dropped: int
     #: Sum of the replayed files' sizes — what a naive pipeline would have uploaded.
     raw_bytes: int = 0
+    cancelled: bool = False
+
+
+#: Operator control for a live run, set by the read API: "pause", "run" or "cancel".
+#: A Redis key rather than a signal because the dashboard and feed-sim share nothing else.
+def control_key(run_id: str) -> str:
+    return f"control:{run_id}"
+
+
+#: What feed-sim is doing now, for the dashboard: "running", "paused", "cancelled", "done".
+def state_key(run_id: str) -> str:
+    return f"control:{run_id}:state"
+
+
+def redis_control(client: redis.Redis, run_id: str):
+    """A control callable for run_feed backed by the run's Redis key."""
+    def read() -> str:
+        raw = client.get(control_key(run_id))
+        return raw.decode() if raw else "run"
+    return read
 
 
 def load_pools(manifest_path: Path) -> tuple[list[str], list[str]]:
@@ -85,10 +105,17 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
              n_frames: int, fps: float, prevalence: float, maxlen: int,
              seed: int, stream: str, transport: str = "reference",
              track: SyntheticTrack | RouteTrack | None = None,
-             order: str = "sample") -> FeedStats:
+             order: str = "sample", control=None) -> FeedStats:
     """`order="sample"` draws with replacement at the given prevalence (benchmark runs).
     `order="all"` replays every manifest image exactly once in a seeded shuffle, ignoring
-    `n_frames` and `prevalence` — the "run the whole dataset" mode."""
+    `n_frames` and `prevalence` — the "run the whole dataset" mode.
+
+    `control`, if given, is called before every frame and returns "run", "pause" or
+    "cancel". Pause holds the vehicle where it is; on resume the pacing restarts from
+    now, so there is no burst of catch-up frames (which would read as a speed spike and
+    could overflow the bounded stream). Cancel stops the feed; the run keeps what it sent."""
+    if fps <= 0:
+        raise ValueError("fps must be positive")
     run_id = run_id or str(uuid.uuid4())
     clean, defect = load_pools(manifest)
     if order == "all":
@@ -102,10 +129,28 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
         next_path = lambda: sampler.next()[0]  # noqa: E731
     producer = FrameProducer(client, stream=stream, maxlen=maxlen)
 
+    def set_state(state: str) -> None:
+        if control is not None:
+            client.set(state_key(run_id), state)
+
     published = raw_bytes = 0
-    for seq, deadline in enumerate(
-        pace_deadlines(start=time.monotonic(), fps=fps, n=n_frames)
-    ):
+    cancelled = False
+    interval = 1.0 / fps
+    deadline = time.monotonic()
+    set_state("running")
+    for seq in range(n_frames):
+        if control is not None:
+            action = control()
+            if action == "pause":
+                set_state("paused")
+                while (action := control()) == "pause":
+                    time.sleep(0.2)
+                deadline = time.monotonic()        # restart pacing: no catch-up burst
+                set_state("running")
+            if action == "cancel":
+                cancelled = True
+                set_state("cancelled")
+                break
         path = next_path()
         data = Path(path).read_bytes()
         raw_bytes += len(data)
@@ -120,13 +165,16 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
         if producer.publish(envelope) is not None:
             published += 1
 
+        deadline += interval
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
 
+    if not cancelled:
+        set_state("done")
     return FeedStats(run_id=run_id, offered=producer.offered,
                      published=published, dropped=producer.dropped,
-                     raw_bytes=raw_bytes)
+                     raw_bytes=raw_bytes, cancelled=cancelled)
 
 
 def main() -> None:
@@ -198,11 +246,13 @@ def main() -> None:
                          n_frames=args.frames, fps=args.fps,
                          prevalence=args.prevalence, maxlen=settings.frames_maxlen,
                          seed=args.seed, stream=settings.frames_stream,
-                         transport=args.transport, track=track, order=args.order)
+                         transport=args.transport, track=track, order=args.order,
+                         control=redis_control(client, run_id))
 
         config: dict = {"frames_offered": stats.offered,
                         "frames_dropped": stats.dropped,
-                        "raw_bytes_offered": stats.raw_bytes, "order": args.order}
+                        "raw_bytes_offered": stats.raw_bytes, "order": args.order,
+                        "cancelled": stats.cancelled}
         if isinstance(track, RouteTrack):
             config["gps_track"] = {
                 "kind": "route", "network": str(args.route), "mode": args.route_mode,
@@ -226,6 +276,7 @@ def main() -> None:
     gps = f" distance_m={track.distance_m(stats.published):.1f}" if track else \
           " gps=off"
     print(f"run_id={stats.run_id} offered={stats.offered} "
+          f"{'CANCELLED ' if stats.cancelled else ''}"
           f"published={stats.published} dropped={stats.dropped}{gps}")
 
 

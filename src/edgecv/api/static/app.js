@@ -64,10 +64,29 @@ const carIcon = (heading) => L.divIcon({ className: "car", iconSize: [30, 30], i
     <path d="M0,-8 L6,6 L0,2.5 L-6,6 Z" fill="#fff"/></svg>` });
 let carMarker = null;
 
+// Where the vehicle drove but nothing was scored: state roads ("not ours") and turns,
+// using the segmenter's own snap, so the dashed line is exactly what the score ignored.
+const trackLayer = L.layerGroup().addTo(map);
+const OFF_COUNCIL = "#6f7d89";
+async function renderTrack() {
+  if (!S.run) return;
+  const t = await api(`/runs/${S.run}/track`).catch(() => null);
+  if (!t) return;
+  trackLayer.clearLayers();
+  for (const s of t.stretches) {
+    if (s.council || s.points.length < 2) continue;
+    L.polyline(s.points, { color: OFF_COUNCIL, weight: 4, opacity: 0.9, dashArray: "5 7" })
+      .bindTooltip("Driven, not surveyed — state road or turn (not the council's)", { sticky: true })
+      .addTo(trackLayer);
+  }
+}
+
 async function renderPosition() {
   if (!S.run) return;
   const p = await api(`/runs/${S.run}/position`).catch(() => null);
   if (!p || !p.car) { if (carMarker) { carMarker.remove(); carMarker = null; } trailLine.setLatLngs([]); return; }
+  S.feedState = p.feed_state;
+  renderControls();
   const c = p.car;
   const kmh = c.speed_mps == null ? "" : ` · ${Math.round(c.speed_mps * 3.6)} km/h`;
   const tip = `Vehicle · frame ${c.seq}${kmh}` +
@@ -93,7 +112,8 @@ function renderLegend() {
     row(BAND_COLOUR.fair, `Fair&nbsp; ${km.fair.toFixed(1)} km`) +
     row(BAND_COLOUR.poor, `Poor&nbsp; ${km.poor.toFixed(1)} km`) +
     row(UNSURVEYED, `Not surveyed&nbsp; ${km.none.toFixed(1)} km`) +
-    row(ARTERIAL, "Not ours (state road)");
+    row(ARTERIAL, "Not ours (state road)") +
+    `<div><i style="background:repeating-linear-gradient(90deg,${OFF_COUNCIL} 0 5px,transparent 5px 9px)"></i>Driven, not surveyed</div>`;
 }
 
 function renderMap(fit) {
@@ -364,6 +384,7 @@ async function loadRun(runId) {
   await refresh(true);
   renderBench();
   renderPosition();
+  renderTrack();
   logReset();
   if (S.worklist.length) selectSegment(S.worklist[0].segment_id);
 }
@@ -390,7 +411,39 @@ function renderLive(run) {
   S.live = !!live;
   const badge = $("live");
   badge.hidden = !live;
-  if (live) badge.textContent = `● LIVE · ${S.summary.frames_ingested.toLocaleString()} frames landed`;
+  if (live) {
+    const paused = S.feedState === "paused";
+    badge.textContent = `${paused ? "❚❚ PAUSED" : "● LIVE"} · ${S.summary.frames_ingested.toLocaleString()} frames landed`;
+    badge.classList.toggle("paused", paused);
+  }
+  renderControls();
+}
+
+function renderControls() {
+  const live = S.live && S.feedState !== "cancelled" && S.feedState !== "done";
+  $("run-ctl").hidden = !live;
+  const paused = S.feedState === "paused";
+  $("ctl-pause").textContent = paused ? "▶ Resume" : "❚❚ Pause";
+  const badge = $("live");
+  if (S.live && badge.textContent) {
+    badge.textContent = badge.textContent.replace(/^(● LIVE|❚❚ PAUSED)/, paused ? "❚❚ PAUSED" : "● LIVE");
+    badge.classList.toggle("paused", paused);
+  }
+}
+
+async function runControl(action) {
+  if (!S.run) return;
+  if (action === "cancel" && !confirm("Cancel this run? Frames already sent are kept, " +
+      "segmented and scored; the rest of the dataset is not replayed.")) return;
+  for (const b of ["ctl-pause", "ctl-cancel"]) $(b).disabled = true;
+  try {
+    await api(`/runs/${S.run}/control`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+  } catch (e) {
+    alert(`Could not ${action}: ${e.message}`);
+  } finally {
+    setTimeout(() => { for (const b of ["ctl-pause", "ctl-cancel"]) $(b).disabled = false; }, 800);
+  }
 }
 
 async function tick() {
@@ -407,6 +460,7 @@ async function tick() {
       await refresh(false);
       if (!S.current && S.worklist.length) selectSegment(S.worklist[0].segment_id);
       if (!S.benched) renderBench();
+      if (S.live) renderTrack();
     }
     renderLive(runs.find((r) => r.run_id === S.run));
   } catch (e) {
@@ -506,6 +560,8 @@ async function boot() {
   setInterval(tick, LIVE_MS);
   setInterval(() => { if (S.live && !document.hidden) renderPosition(); }, CAR_MS);
   setInterval(() => { if (!$("log").hidden && !LOG.paused) logPoll(); }, 1000);
+  $("ctl-pause").onclick = () => runControl(S.feedState === "paused" ? "resume" : "pause");
+  $("ctl-cancel").onclick = () => runControl("cancel");
   $("live").onclick = () => { $("log").hidden = !$("log").hidden; if (!$("log").hidden) logPoll(); };
   $("log-close").onclick = () => { $("log").hidden = true; };
   $("log-clear").onclick = () => { $("log-body").textContent = ""; LOG.n = 0; LOG.html = []; };

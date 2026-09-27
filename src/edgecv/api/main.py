@@ -26,9 +26,10 @@ from edgecv.bench.collect import run_coverage
 from edgecv.blobstore.store import BlobStore
 from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
+from edgecv.feedsim.main import control_key, state_key
 from edgecv.roads import load_ways
 from edgecv.segmenter.index import AUTO_ACCEPT_CONF
-from edgecv.segmenter.main import segment_run
+from edgecv.segmenter.main import HEADING_TOL_DEG, SNAP_LATERAL, SNAP_M, segment_run
 from edgecv.worker.main import CROP_FMT
 
 SETTINGS = Settings.from_env()
@@ -350,6 +351,32 @@ def _latest_published(run_id: str) -> dict | None:
     return None
 
 
+def _feed_state(run_id: str) -> str | None:
+    try:
+        raw = redis.from_url(SETTINGS.redis_url).get(state_key(run_id))
+        return raw.decode() if raw else None
+    except redis.RedisError:
+        return None
+
+
+class Control(BaseModel):
+    action: Literal["pause", "resume", "cancel"]
+
+
+@app.post("/api/runs/{run_id}/control")
+def control(run_id: str, body: Control) -> dict:
+    """Pause, resume or cancel a live run. feed-sim reads the key before every frame;
+    the workers and writer keep draining whatever is already on the bus."""
+    with db() as conn, conn.cursor() as cur:
+        run = _run(cur, run_id)
+    if run["ended_at"] is not None:
+        raise HTTPException(409, "run already finished")
+    value = {"pause": "pause", "resume": "run", "cancel": "cancel"}[body.action]
+    # Expires so a crashed feed-sim can't leave a stale "pause" for a reused run id.
+    redis.from_url(SETTINGS.redis_url).set(control_key(run_id), value, ex=6 * 3600)
+    return {"run_id": run_id, "requested": body.action, "feed_state": _feed_state(run_id)}
+
+
 @app.get("/api/runs/{run_id}/position")
 def position(run_id: str, trail: int = 150) -> dict:
     """Car marker + recent track. The car comes from the bus when the run is live, and
@@ -362,9 +389,42 @@ def position(run_id: str, trail: int = 150) -> dict:
             FROM frames WHERE run_id = %s AND lat IS NOT NULL
             ORDER BY seq DESC LIMIT %s""", (run_id, trail))
         landed = rows(cur)
-    car = _latest_published(run_id) or (landed[0] | {"source": "landed"} if landed else None)
+    # Whichever is further along: the bus's newest frame, or the newest landed one. The
+    # workers delete frames from the bus once processed, so a drained bus (paused, or
+    # caught up) would otherwise snap the car back to an older landed frame.
+    bus = _latest_published(run_id)
+    last = landed[0] | {"source": "landed"} if landed else None
+    car = max((c for c in (bus, last) if c), key=lambda c: c["seq"], default=None)
     return {"car": car, "landed_seq": landed[0]["seq"] if landed else None,
+            "feed_state": _feed_state(run_id),
             "trail": [[r["lat"], r["lon"]] for r in reversed(landed)]}
+
+
+@app.get("/api/runs/{run_id}/track")
+def track(run_id: str, every: int = 3) -> dict:
+    """The driven path so far, thinned to every `every`-th frame, split into stretches that
+    were on a council segment (scored) or not (state roads, turns: never scored). Uses the
+    segmenter's own snap, so a dashed stretch on the map is exactly what the score ignored."""
+    with db() as conn, conn.cursor() as cur:
+        run = _run(cur, run_id)
+        cur.execute("SELECT f.seq, f.lat, f.lon, s.segment_id IS NOT NULL AS council "
+                    "FROM frames f " + SNAP_LATERAL +
+                    " WHERE f.run_id = %(run)s AND f.lat IS NOT NULL "
+                    "AND f.seq %% %(every)s = 0 ORDER BY f.seq",
+                    {"authority": run["authority_id"], "snap": SNAP_M,
+                     "tol": HEADING_TOL_DEG, "run": run_id, "every": max(1, every)})
+        pts = cur.fetchall()
+    stretches: list[dict] = []
+    for seq, lat, lon, council in pts:
+        if stretches and stretches[-1]["council"] == council and seq - stretches[-1]["last"] <= every * 2:
+            stretches[-1]["points"].append([lat, lon])
+            stretches[-1]["last"] = seq
+        else:
+            # Start each stretch at the previous one's last point so the line has no gaps.
+            head = [stretches[-1]["points"][-1]] if stretches and seq - stretches[-1]["last"] <= every * 2 else []
+            stretches.append({"council": council, "first": seq, "last": seq,
+                              "points": head + [[lat, lon]]})
+    return {"stretches": stretches}
 
 
 @app.get("/api/runs/{run_id}/log")

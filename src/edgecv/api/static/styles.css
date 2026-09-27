@@ -29,6 +29,14 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
   animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .45; } }
 .live:hover { background: #2a1d1b; }
+.live.paused { color: #e0b25c; border-color: #5b4a24; animation: none; }
+.run-ctl { display: inline-flex; gap: 6px; }
+.run-ctl[hidden] { display: none; }
+.ctl { background: #232a31; color: #cfe0ea; border: 1px solid #34404b; border-radius: 4px;
+  padding: 3px 10px; font: 13px inherit; font-family: inherit; cursor: pointer; }
+.ctl:hover { background: #2c353e; }
+.ctl.danger { color: #ff9b8a; border-color: #5a2f28; }
+.ctl:disabled { opacity: .5; cursor: default; }
 .car { background: none; border: 0; }
 .car svg { filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
 .log { position: fixed; left: 0; right: 0; bottom: 0; height: 38vh; z-index: 2000;

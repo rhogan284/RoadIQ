@@ -38,7 +38,9 @@ the gap is the pipeline's lag. Click **● LIVE**, or open `/static/index.html#l
 per-frame log in landing order. The drive is a closed 4.7 km main-road loop
 (`roads.DEMO_LOOP`), 72 % on council roads, crossing state arterials (drawn grey, "not
 ours", never scored) only where the council network has no way round. `--route-mode cover`
-restores the old drive over every street.
+restores the old drive over every street. Grey dashed legs are where the car drove but
+nothing was scored (state roads, turns). **❚❚ Pause / ■ Cancel** sit next to the LIVE badge
+(`POST /api/runs/{id}/control` with `pause`, `resume` or `cancel`).
 
 Your existing `make up` stack already on 5432/6379? Run the demo beside it:
 `COMPOSE_PROJECT_NAME=roadiq-e2e PG_PORT=55432 REDIS_PORT=56379 PG_DSN=postgresql://edgecv:edgecv@localhost:55432/edgecv REDIS_URL=redis://localhost:56379/0 make e2e`.

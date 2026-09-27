@@ -227,3 +227,13 @@ idempotent writes). They are decisions and observations, not T2 work done:
    every-street route. The council network is 20 disconnected pieces without the state
    arterials, so arterials are in the network file as `council: false`: driven, drawn grey,
    never segmented or scored.
+7. **Heading-aware snapping** (bug found on the loop run). A frame snaps to a council
+   segment only if the vehicle's heading runs along it (±30°, either direction). Before,
+   frames on Harris St / Cleveland St within 15 m of a side-street mouth credited their
+   defects to the side street — a wrong-road attribution, which §6 ranks worse than
+   unlocated. About 1 % of council frames (mid-turn at corners) are now unsnapped instead.
+   The read API's `/track` uses the same SQL (`segmenter.SNAP_LATERAL`), so the dashed
+   "driven, not surveyed" legs on the map are exactly the frames the score ignored.
+8. **Run control.** Pause / resume / cancel from the dashboard via a Redis key feed-sim
+   checks before each frame. Resume restarts pacing (no catch-up burst). Cancel keeps what
+   was sent; `make e2e` still drains, segments and scores the partial run.
