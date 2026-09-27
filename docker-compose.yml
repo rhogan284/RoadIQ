@@ -106,6 +106,7 @@ services:
   runner:
     <<: *app
     command: python -m edgecv.runner --serve
+    restart: unless-stopped
 
   # Component 7 (read API) + component 8 (the product dashboard, served at /).
   api:

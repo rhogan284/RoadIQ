@@ -114,7 +114,15 @@ def serve(settings: Settings) -> None:
     client = redis.from_url(settings.redis_url, decode_responses=True)
     print("runner waiting for requests", flush=True)
     while True:
-        item = client.blpop(REQUESTS, timeout=30)
+        # Short blocking waits, and a lost socket is retried, not fatal: the first version
+        # used a 30 s BLPOP, hit a socket read timeout while idle, and the service died
+        # with a request still queued ("Starting run…" forever).
+        try:
+            item = client.blpop(REQUESTS, timeout=5)
+        except (redis.TimeoutError, redis.ConnectionError) as exc:
+            print(f"runner: redis wait failed ({exc}); retrying", flush=True)
+            time.sleep(2)
+            continue
         if item is None:
             continue
         req = json.loads(item[1])
