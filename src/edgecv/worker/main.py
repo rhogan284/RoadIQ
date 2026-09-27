@@ -20,7 +20,6 @@ from edgecv.config import Settings
 from edgecv.contracts.detection import Detector, InferenceResult
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.detectors.registry import build_detector
-from edgecv.detectors.threshold import ThresholdDetector
 
 CROP_PADDING_PX = 16
 THUMBNAIL_LONG_EDGE = 256
@@ -36,9 +35,9 @@ LOST_IN_FLIGHT_KEY = "stats:lost_in_flight"
 
 
 def _decode(envelope: FrameEnvelope) -> np.ndarray:
-    # Colour, not grayscale: the YOLO detector was trained on colour frames, and the
-    # threshold detector converts to gray itself. Crops and thumbnails are therefore
-    # colour too, so bytes-per-km is higher than the M2 (grayscale) figure.
+    # Colour, not grayscale: the YOLO detector was trained on colour frames. Crops and
+    # thumbnails are therefore colour too, so stored bytes are higher than the M2
+    # (grayscale) figure.
     if envelope.transport == "inline":
         assert envelope.payload is not None
         buffer = np.frombuffer(envelope.payload, dtype=np.uint8)
@@ -60,8 +59,7 @@ def _encode(image: np.ndarray, fmt: str, *, lossless: bool) -> bytes:
 
 
 def process_one(envelope: FrameEnvelope, *, blobstore: BlobStore, worker_id: str,
-                detector: Detector | None = None) -> InferenceResult:
-    detector = detector or ThresholdDetector()
+                detector: Detector) -> InferenceResult:
     started_at = datetime.now(timezone.utc)
     began = time.perf_counter()
 
@@ -126,7 +124,7 @@ def process_one(envelope: FrameEnvelope, *, blobstore: BlobStore, worker_id: str
 
 def _handle(entry_id, envelope, *, consumer: FrameConsumer, blobstore: BlobStore,
             worker_id: str, client: redis.Redis, results_stream: str,
-            detector: Detector | None = None) -> None:
+            detector: Detector) -> None:
     outcome = process_one(envelope, blobstore=blobstore, worker_id=worker_id,
                           detector=detector)
     client.xadd(results_stream, {"json": outcome.to_json()})
@@ -151,7 +149,7 @@ def _record_lost(client: redis.Redis, entry_ids: list[str], *,
 
 def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
                       worker_id: str, client: redis.Redis,
-                      results_stream: str, detector: Detector | None = None) -> int:
+                      results_stream: str, detector: Detector) -> int:
     """Fully claim every currently-idle-enough pending entry, not just one
     XAUTOCLAIM's worth.
 

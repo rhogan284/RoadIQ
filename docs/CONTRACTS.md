@@ -93,8 +93,7 @@ Example (reference transport, full position + clock — what a phone will send):
 **What changing it would break:** feed-sim ([`feedsim/main.py`](../src/edgecv/feedsim/main.py)) is the
 only producer today; a new required field breaks it immediately, and a removed or renamed field breaks
 every worker's `FrameEnvelope.from_fields()` call
-([`worker/main.py`](../src/edgecv/worker/main.py)) plus `scripts/make_fixtures.py`, which builds
-envelopes for the fixture generator. Because `worker/main.py` copies the position/clock fields
+([`worker/main.py`](../src/edgecv/worker/main.py)). Because `worker/main.py` copies the position/clock fields
 straight onto `InferenceResult` (contract 2), a change here that isn't mirrored there breaks the
 writer's `frames` table insert in
 [`db/repository.py`](../src/edgecv/db/repository.py)`::write_results` the moment it runs.
@@ -175,7 +174,7 @@ above; that formula is now written down in the schema's `description` and here r
 in one property getter.
 
 **What changing it would break:** the worker loop (constructs `InferenceResult`), any `Detector`
-implementation such as [`detectors/threshold.py`](../src/edgecv/detectors/threshold.py) (must return
+implementation such as [`detectors/yolo12s.py`](../src/edgecv/detectors/yolo12s.py) (must return
 `Detection`/`BBox` in this exact shape), and
 [`db/repository.py`](../src/edgecv/db/repository.py)`::write_results`, which reads `detector.name`,
 `.version`, `.params`, `.params_hash`, every `result.<position field>`, and every

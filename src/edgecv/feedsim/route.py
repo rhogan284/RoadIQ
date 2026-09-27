@@ -1,10 +1,8 @@
 """A GPS track that follows real streets, for dataset replay.
 
-Same interface as `SyntheticTrack` (`fix_for`, `fixes`, `distance_m`), so `run_feed` does
-not care which it gets. The straight rhumb line stays the measurement rig for bytes-per-km;
-this one exists so frames land on real road segments and the condition map has something
-to colour. Constant speed, no positional noise, for the same reason as the rhumb track:
-the error in anything downstream should be attributable to the pipeline, not the fixture.
+Frames land on real road segments, so the condition map has something to colour.
+Constant speed, no positional noise: the error in anything downstream should be
+attributable to the pipeline, not the fixture.
 
 If the run is longer than the route, the vehicle goes round again — a second lap is a
 re-survey of the same segments, which is honest about what happened.
@@ -12,12 +10,25 @@ re-survey of the same segments, which is honest about what happened.
 from __future__ import annotations
 
 from bisect import bisect_right
+from dataclasses import dataclass
 from math import atan2, cos, degrees, radians, sin
 from pathlib import Path
 
-from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix
 from edgecv.geo import LatLon, haversine_m
 from edgecv.roads import DEFAULT_NETWORK, build_loop, build_random_route, build_route, load_ways
+
+#: A phone's horizontal accuracy with a clear sky view, metres.
+DEFAULT_ACCURACY_M = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class Fix:
+    """One position report, shaped to contract 1's optional position fields."""
+    lat: float
+    lon: float
+    heading_deg: float
+    speed_mps: float
+    gps_accuracy_m: float
 
 
 def _bearing(a: LatLon, b: LatLon) -> float:
@@ -71,7 +82,7 @@ class RouteTrack:
         return [self.fix_for(seq) for seq in range(n_frames + 1)]
 
     def distance_m(self, n_frames: int) -> float:
-        # Measured through the fixes, like SyntheticTrack. A lap wrap jumps back to the
+        # Measured through the fixes. A lap wrap jumps back to the
         # start, so sum per step and skip the wrap step rather than measure the jump.
         fx = self.fixes(n_frames)
         step = self.speed_mps / self.fps

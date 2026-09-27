@@ -6,15 +6,12 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
 
 ## Quick start
 
-    make install          # uv sync
+    make install          # uv sync --group yolo
     cp .env.example .env
+    make weights dataset  # YOLOv12s weights + RDD2022 test split (once, gitignored)
     make up               # redis + postgres
-    make migrate          # apply schema
-    make test             # unit tests
-    make itest            # integration tests (needs `make up`; stops app services first, see below)
-    make fixtures         # generate synthetic fixture images (needed once for make demo)
-    make demo             # full pipeline under compose
-    make bench-bytes      # bytes-per-kilometre figure for the latest run
+    make test             # e2e suite (stops the app services first, see below)
+    make e2e              # full stack, whole test split, dashboard on :8000
 
 ## End-to-end demo — RDD2022 through every component
 
@@ -25,7 +22,7 @@ Design, decisions and every change made on the way:
 
 ### Setup (once)
 
-    uv sync --group yolo    # + ultralytics / CPU torch for the YOLOv12s detector
+    make install            # uv sync --group yolo: ultralytics / CPU torch for YOLOv12s
     make weights            # YOLOv12s road-damage weights → weights/ (19 MB, gitignored)
     make dataset            # RDD2022 test split → data/rdd2022/ (5,758 images, ~1.6 GB, gitignored)
 
@@ -96,7 +93,7 @@ before the first frame.
 
 | Service | Component | Role |
 |---|---|---|
-| `worker` | 3 + 4 | now runs Shervin's YOLOv12s by default (`DETECTOR=yolo12s`); `DETECTOR=threshold` restores the baseline |
+| `worker` | 3 + 4 | runs Shervin's YOLOv12s (`detectors/yolo12s.py`), picked by `detectors/registry.py` |
 | `segmenter` | 11 | always-on: snap, cluster into `defect_instances`, score `segment_condition` (recompute-and-replace per run) |
 | `api` | 7 + 8 | FastAPI read layer; serves the dashboard at `/` |
 | `runner` | harness | runs **＋ New run** requests from a Redis queue (feed-sim → drain → segmenter → bench), in its own container so an API redeploy can't kill a run |
@@ -127,8 +124,8 @@ detector's `params`, so a swap is a new `detectors` row and benchmark rows never
   per frame; box-level P 0.888 · R 0.835 · F1 0.861 at IoU ≥ 0.5 on D00/D10/D20.
 - Whole split at 12 fps: the workers land ~8–9 fps, the 1,000-deep bus fills after ~4 min,
   and 600 frames are refused and counted — the bounded-buffer design working as intended.
-- Storage: ~225 MB of crops for 1.63 GB captured (~7×). Crops are colour now (the worker
-  decodes colour for YOLO), so this is not comparable with the grayscale M2 figure below.
+- Storage: ~225 MB of crops for 1.63 GB captured (~7×). Crops are colour (the worker
+  decodes colour for YOLO), so this is not comparable with the grayscale Week 6 figure.
 
 **Caveats that must travel with the accuracy numbers:**
 
@@ -157,7 +154,7 @@ a device; right of it (writer, Postgres, dashboard) is backend infrastructure.
 
 feed-sim is the exception to that split: it also registers each run in Postgres'
 `survey_runs` (`upsert_run`/`finish_run`), because it's the only component that knows
-`run_id`, `target_fps`, `prevalence`, `transport` and the source. That's a Postgres write
+`run_id`, `target_fps`, `transport` and the source. That's a Postgres write
 on the edge side of the seam -- an accepted trade for this milestone, since feed-sim is a
 test harness standing in for both the device and the run-registration step, not a
 statement that the real device will write to Postgres directly.
@@ -169,63 +166,13 @@ is replaced here by feed-sim replaying the dataset along a route.
 
 See `docs/` and the design spec for detail.
 
-## Measurement — bytes per kilometre
-
-Success criterion 1 is "store and upload at least 100x less data per kilometre than
-keeping every frame". `make bench-bytes` reports it for the most recent run:
-
-    RoadIQ -- bytes per kilometre (success criterion 1)
-      frames          600  (600 with a GPS fix, 0 without)
-      distance        0.555 km
-      stored           106.8 KiB    192.5 KiB /km
-      every frame       24.7 MiB     44.5 MiB /km
-      reduction       236.7x   (target 100x)   PASS
-
-It exits non-zero when a run misses the target, so it can gate a build later.
-
-The per-kilometre figures divide by the **assessed** distance, not the whole attempted
-track. Stored bytes and the every-frame baseline both come from the frames actually
-processed, so the road those frames covered is the matching denominator. The ratio is
-unaffected either way — both sides divide by the same number — but the absolutes are
-not, which is only visible now that coverage is reported next to them.
-
-**feed-sim now emits a synthetic GPS fix on every frame** (`--no-gps` opts out).
-Before this every frame reached Postgres with `lat IS NULL`, so there was no
-distance to divide by and the figure could not be computed at all. The track is a
-rhumb line at constant speed -- deliberately not realistic, because a measurement
-rig wants a denominator that is analytically known. `survey_runs.config.gps_track`
-records the parameters so the distance can be audited.
-
-Three things to know before quoting the number:
-
-- **The fixtures are synthetic 256px images averaging ~42 KB**, not real RDD2022
-  road photos at ~500 KB. The every-frame baseline here is therefore about 12x
-  smaller than a real drive's, so this figure is a working measurement of the
-  pipeline, not a claim about real-world storage.
-- **Storage scales with defect prevalence.** This run used `--prevalence 0.03`
-  and stored 15 detections' crops. A rougher road stores more.
-- **`bytes_stored` is measured off the blob store, not `snippets.bytes`** -- that
-  column is a 0 placeholder on every row, because the writer only ever sees
-  content hashes on the wire. The store totals the whole tree, and snippets carry
-  no run linkage, so a per-run figure needs a store holding one run:
-  `BLOB_ROOT=/blobs/m2-run02 make bench-bytes`. Correct attribution on a shared
-  store needs a `run_snippets` join table written by the worker (Week 8).
-
 ## Coverage — drops as metres of road not assessed
 
 Success criterion 2 says "any frame we drop is counted and shown as a gap in the
-survey, measured in metres of road not assessed". `make bench-bytes` now reports it
-alongside the storage figures:
-
-    -- coverage (success criterion 2) ------------------------
-      assessed             472.3 m
-      not assessed          82.4 m   (88 frame(s) lost in 1 gap(s))
-      largest gap           82.4 m
-      coverage              85.1%
-
-Measured on a deliberately degraded run: `FRAMES_MAXLEN=5`, both workers paused for
-six seconds twelve seconds into a 40-second drive. 88 of 600 frames were refused, and
-they show up as one 82.4 m hole in the survey rather than as a frame count.
+survey, measured in metres of road not assessed". The dashboard's km-assessed chip shows
+it (`gap_m` in `/api/runs/{id}/summary`), and `tests/e2e/test_backpressure.py` proves it:
+a bus overloaded mid-feed refuses 15 frames in a row, and they come back as one gap of
+road metres between the frames either side, with the run still 100 % accounted for.
 
 A dropped frame has no row and no position of its own, but the frames either side of
 it do, so the hole is measured as the distance between its neighbours. That needs no
@@ -240,8 +187,8 @@ keeps them apart:
   its positioned neighbours. Calling this a gap would understate coverage we can
   actually evidence.
 
-`FRAMES_MAXLEN` is overridable so a sweep can vary the buffer depth and force drops
-on purpose: `FRAMES_MAXLEN=5 docker compose up -d worker writer`.
+`FRAMES_MAXLEN` is overridable so a run can force drops on purpose:
+`FRAMES_MAXLEN=5 docker compose up -d worker writer`, or `FPS=12 make e2e`.
 
 ## Bus health — lag, pending, and stuck work
 
@@ -294,13 +241,24 @@ target or export it yourself:
 
     PYTHONPATH=src uv run python -m edgecv.db.migrate
 
-The integration suite (`make itest`, or `tests/integration/`) is mutually exclusive
-with a running app stack, not just by convention: its `rds` fixture flushes the
-whole Redis DB on setup and teardown, and `tests/integration/test_chaos_worker_kill.py`
-reads from the same `frames`/`workers` stream and consumer group the containerised
-`worker` service consumes from, so a live stack races the test's own consumers and
-breaks its exact frame counts. `make itest` stops `worker`, `writer`, `feedsim` and
-`dashboard` before running pytest (redis and postgres are left up); it does not
-restart them afterwards, so run `make demo` or `docker compose up -d` again when you
-want the full pipeline back. If you invoke `pytest` directly instead of through
-`make itest`, stop those four services yourself first.
+## Tests
+
+The system is covered by a handful of end-to-end tests in `tests/e2e/`, all on real
+RDD2022 images through the YOLOv12s detector against live Postgres and Redis:
+
+| Test | What it proves |
+|---|---|
+| `test_pipeline.py` | feed-sim → bus → worker → writer → segmenter → bench → read API → review → re-score |
+| `test_worker_failure.py` | a worker dies mid-run: no frame lost or duplicated, bus health shows the stuck work, redelivery is idempotent, destroyed entries don't strand orphans |
+| `test_backpressure.py` | a full bus refuses frames; the API reports them as dropped and as metres not assessed |
+
+`make test` runs them (about 20 s). The suite is mutually exclusive with a running app
+stack: the `rds` fixture flushes the whole Redis DB, the fixtures TRUNCATE Postgres, and
+the worker-failure tests read from the same `frames`/`workers` stream and group the
+containerised workers consume from. `make test` stops the app services first (redis and
+postgres stay up) and does not restart them; `make stack` brings them back. To test
+beside a demo you want to keep, point the suite at a scratch stack:
+
+    PG_PORT=55433 REDIS_PORT=56380 docker compose -p roadiq-test up -d redis postgres
+    PG_DSN=postgresql://edgecv:edgecv@localhost:55433/edgecv \
+    REDIS_URL=redis://localhost:56380/0 uv run pytest

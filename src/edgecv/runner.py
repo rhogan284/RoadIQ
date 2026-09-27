@@ -58,7 +58,7 @@ def wait_for_drain(conn, client, run_id: str, *, timeout_s: float,
 
 def feed_args(*, run_id: str, fps: float, speed_mps: float, route_mode: str,
               route_seed: int | None, max_frames: int | None) -> list[str]:
-    args = ["--manifest", MANIFEST, "--order", "all", "--route", ROUTE,
+    args = ["--manifest", MANIFEST, "--route", ROUTE,
             "--route-mode", route_mode, "--source-kind", "dataset-replay",
             "--fps", str(fps), "--speed-mps", str(speed_mps), "--run-id", run_id]
     if route_seed is not None:

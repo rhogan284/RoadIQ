@@ -1,11 +1,9 @@
-"""feed-sim: replay images as a paced, prevalence-controlled frame feed.
+"""feed-sim: replay a dataset as a paced frame feed along the road network.
 
-Frames carry a synthetic GPS fix by default (`--no-gps` to opt out). Before
-this, every replayed frame reached Postgres with `lat IS NULL`, which left the
-bytes-per-kilometre milestone with no denominator -- there was no distance to
-divide by. The track is generated here rather than baked into the fixture
-manifest because position belongs to the drive, not to the picture: the same
-pool of images replayed at a different speed must cover a different distance.
+Every manifest image is sent exactly once, in a seeded shuffle, with a GPS fix from a
+drive over the street network. The track is generated here rather than baked into the
+manifest because position belongs to the drive, not to the picture: the same images
+replayed at a different speed must cover a different distance.
 """
 from __future__ import annotations
 
@@ -28,15 +26,12 @@ from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.db.migrate import apply_migrations
 from edgecv.db.repository import Repository
-from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix, SyntheticTrack
-from edgecv.feedsim.prevalence import PrevalenceSampler
-from edgecv.feedsim.route import RouteTrack
+from edgecv.feedsim.route import DEFAULT_ACCURACY_M, Fix, RouteTrack
+from edgecv.roads import DEFAULT_NETWORK
 
-#: Sydney CBD, George and Market. An arbitrary but plausible survey origin.
-DEFAULT_START = (-33.8688, 151.2093)
 #: 50 km/h in m/s -- an urban survey speed.
 DEFAULT_SPEED_MPS = 13.89
-DEFAULT_BEARING_DEG = 90.0
+DEFAULT_MANIFEST = Path("data/rdd2022/manifest.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,14 +97,10 @@ def build_envelope(*, run_id: str, seq: int, path: str, data: bytes,
 
 
 def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
-             n_frames: int, fps: float, prevalence: float, maxlen: int,
-             seed: int, stream: str, transport: str = "reference",
-             track: SyntheticTrack | RouteTrack | None = None,
-             order: str = "sample", control=None,
-             max_frames: int | None = None) -> FeedStats:
-    """`order="sample"` draws with replacement at the given prevalence (benchmark runs).
-    `order="all"` replays every manifest image exactly once in a seeded shuffle, ignoring
-    `n_frames` and `prevalence` — the "run the whole dataset" mode.
+             fps: float, maxlen: int, seed: int, stream: str,
+             transport: str = "reference", track: RouteTrack | None = None,
+             control=None, max_frames: int | None = None) -> FeedStats:
+    """Replay every manifest image exactly once in a seeded shuffle.
 
     `control`, if given, is called before every frame and returns "run", "pause" or
     "cancel". Pause holds the vehicle where it is; on resume the pacing restarts from
@@ -119,19 +110,12 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
         raise ValueError("fps must be positive")
     run_id = run_id or str(uuid.uuid4())
     clean, defect = load_pools(manifest)
-    if order == "all":
-        paths = clean + defect
-        random.Random(seed).shuffle(paths)
-        # A short demo run takes the first N of the shuffle — a random sample of the
-        # split, not its first N files, which would all be one country.
-        if max_frames:
-            paths = paths[:max_frames]
-        n_frames = len(paths)
-        next_path = iter(paths).__next__
-    else:
-        sampler = PrevalenceSampler(clean, defect, prevalence=prevalence,
-                                    rng=random.Random(seed))
-        next_path = lambda: sampler.next()[0]  # noqa: E731
+    paths = clean + defect
+    random.Random(seed).shuffle(paths)
+    # A short demo run takes the first N of the shuffle — a random sample of the
+    # split, not its first N files, which would all be one country.
+    if max_frames:
+        paths = paths[:max_frames]
     producer = FrameProducer(client, stream=stream, maxlen=maxlen)
 
     def set_state(state: str) -> None:
@@ -143,7 +127,7 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
     interval = 1.0 / fps
     deadline = time.monotonic()
     set_state("running")
-    for seq in range(n_frames):
+    for seq, path in enumerate(paths):
         if control is not None:
             action = control()
             if action == "pause":
@@ -156,7 +140,6 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
                 cancelled = True
                 set_state("cancelled")
                 break
-        path = next_path()
         data = Path(path).read_bytes()
         raw_bytes += len(data)
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
@@ -185,80 +168,56 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
 def main() -> None:
     settings = Settings.from_env()
     ap = argparse.ArgumentParser(description="Simulated road-survey frame feed")
-    ap.add_argument("--manifest", type=Path,
-                    default=Path("tests/fixtures/generated/manifest.json"))
-    ap.add_argument("--frames", type=int, default=200)
-    ap.add_argument("--fps", type=float, default=15.0)
-    ap.add_argument("--prevalence", type=float, default=0.02)
+    ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--authority-id", default="demo-council")
     ap.add_argument("--transport", choices=["inline", "reference"],
                     default="reference")
-    ap.add_argument("--order", choices=["sample", "all"], default="sample",
-                    help="all = every manifest image once (ignores --frames, --prevalence)")
-    ap.add_argument("--route", type=Path, default=None,
-                    help="drive along this road-network GeoJSON instead of a straight "
-                         "line (e.g. src/edgecv/roads/sydney_demo.geojson)")
+    ap.add_argument("--route", type=Path, default=DEFAULT_NETWORK,
+                    help="road-network GeoJSON to drive along")
     ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random",
                     help="random = a new randomised drive over the council streets each "
                          "run, sized to the frame count; loop = the fixed main-road loop; "
                          "cover = every street, with jumps")
     ap.add_argument("--max-frames", type=int, default=None,
-                    help="with --order all: replay only the first N of the shuffle")
+                    help="replay only the first N of the shuffle")
     ap.add_argument("--route-seed", type=int, default=None,
                     help="fix the random route (default: a new one every run)")
-    ap.add_argument("--source-kind", choices=["synthetic", "dataset-replay", "drive"],
-                    default="synthetic")
-    ap.add_argument("--no-gps", dest="gps", action="store_false", default=True,
-                    help="replay without a position fix (the pre-milestone-2 "
-                         "behaviour; leaves lat/lon NULL and makes "
-                         "bytes-per-km unmeasurable)")
-    ap.add_argument("--start-lat", type=float, default=DEFAULT_START[0])
-    ap.add_argument("--start-lon", type=float, default=DEFAULT_START[1])
-    ap.add_argument("--bearing", type=float, default=DEFAULT_BEARING_DEG)
+    ap.add_argument("--source-kind", choices=["dataset-replay", "drive"],
+                    default="dataset-replay")
     ap.add_argument("--speed-mps", type=float, default=DEFAULT_SPEED_MPS)
     ap.add_argument("--gps-accuracy-m", type=float, default=DEFAULT_ACCURACY_M)
     args = ap.parse_args()
 
     if not args.manifest.exists():
-        raise SystemExit(f"manifest {args.manifest} not found — for RDD2022 run "
-                         f"`make dataset` first")
-    route_seed = None
-    if not args.gps:
-        track = None
-    elif args.route:
-        clean, defect = load_pools(args.manifest)
-        n_planned = len(clean) + len(defect) if args.order == "all" else args.frames
-        if args.order == "all" and args.max_frames:
-            n_planned = min(n_planned, args.max_frames)
-        route_seed = (args.route_seed if args.route_seed is not None
-                      else random.SystemRandom().randrange(1_000_000))
-        track = RouteTrack.from_network(args.route, mode=args.route_mode,
-                                        n_frames=n_planned, seed=route_seed,
-                                        speed_mps=args.speed_mps,
-                                        fps=args.fps, accuracy_m=args.gps_accuracy_m)
-    else:
-        track = SyntheticTrack(
-            start=(args.start_lat, args.start_lon), bearing_deg=args.bearing,
-            speed_mps=args.speed_mps, fps=args.fps, accuracy_m=args.gps_accuracy_m,
-        )
+        raise SystemExit(f"manifest {args.manifest} not found — run `make dataset` first")
+    clean, defect = load_pools(args.manifest)
+    n_planned = len(clean) + len(defect)
+    if args.max_frames:
+        n_planned = min(n_planned, args.max_frames)
+    route_seed = (args.route_seed if args.route_seed is not None
+                  else random.SystemRandom().randrange(1_000_000))
+    track = RouteTrack.from_network(args.route, mode=args.route_mode,
+                                    n_frames=n_planned, seed=route_seed,
+                                    speed_mps=args.speed_mps,
+                                    fps=args.fps, accuracy_m=args.gps_accuracy_m)
 
     run_id = args.run_id or str(uuid.uuid4())
     client = redis.from_url(settings.redis_url, decode_responses=False)
 
-    # feedsim is the only component that knows run_id, target_fps, prevalence,
-    # transport and the source, so it registers the run -- nothing else in the
-    # running system writes survey_runs. This puts a Postgres write on the
-    # "edge" side of the frames-stream seam described in README.md; see the
-    # note there for why that's an accepted trade for this milestone.
+    # feedsim is the only component that knows run_id, target_fps, transport and the
+    # source, so it registers the run -- nothing else in the running system writes
+    # survey_runs. This puts a Postgres write on the "edge" side of the frames-stream
+    # seam described in README.md; see the note there for why that's accepted.
     with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
         apply_migrations(conn)
         repo = Repository(conn)
         repo.upsert_run(run_id=run_id, authority_id=args.authority_id,
                         started_at=datetime.now(timezone.utc),
                         source_kind=args.source_kind, source_ref=str(args.manifest),
-                        target_fps=args.fps, prevalence=args.prevalence,
+                        target_fps=args.fps, prevalence=None,
                         transport=args.transport,
                         # Written BEFORE the first frame, so the dashboard can draw the
                         # whole planned drive while the car is still on it.
@@ -267,46 +226,34 @@ def main() -> None:
                             "length_m": round(track.length_m, 1),
                             "speed_mps": args.speed_mps, "fps": args.fps,
                             "points": [[round(la, 6), round(lo, 6)] for la, lo in track.route],
-                        }} if isinstance(track, RouteTrack) else None)
+                        }})
 
         stats = run_feed(client, manifest=args.manifest, run_id=run_id,
-                         n_frames=args.frames, fps=args.fps,
-                         prevalence=args.prevalence, maxlen=settings.frames_maxlen,
+                         fps=args.fps, maxlen=settings.frames_maxlen,
                          seed=args.seed, stream=settings.frames_stream,
-                         transport=args.transport, track=track, order=args.order,
+                         transport=args.transport, track=track,
                          control=redis_control(client, run_id),
                          max_frames=args.max_frames)
 
-        config: dict = {"frames_offered": stats.offered,
-                        "frames_dropped": stats.dropped,
-                        "raw_bytes_offered": stats.raw_bytes, "order": args.order,
-                        "cancelled": stats.cancelled}
-        if isinstance(track, RouteTrack):
-            config["gps_track"] = {
+        repo.finish_run(stats.run_id, datetime.now(timezone.utc), config={
+            "frames_offered": stats.offered,
+            "frames_dropped": stats.dropped,
+            "raw_bytes_offered": stats.raw_bytes,
+            "cancelled": stats.cancelled,
+            "gps_track": {
                 "kind": "route", "network": str(args.route), "mode": args.route_mode,
                 "seed": route_seed,
                 "route_length_m": round(track.length_m, 1),
                 "speed_mps": args.speed_mps, "fps": args.fps,
                 "accuracy_m": args.gps_accuracy_m,
                 "expected_distance_m": round(track.distance_m(stats.published), 3),
-            }
-        elif track is not None:
-            # Written so the denominator of the bytes-per-km figure can be
-            # audited and the run reproduced, not just trusted.
-            config["gps_track"] = {
-                "kind": "synthetic-rhumb", "start_lat": args.start_lat,
-                "start_lon": args.start_lon, "bearing_deg": args.bearing,
-                "speed_mps": args.speed_mps, "fps": args.fps,
-                "accuracy_m": args.gps_accuracy_m,
-                "expected_distance_m": round(track.distance_m(stats.published), 3),
-            }
-        repo.finish_run(stats.run_id, datetime.now(timezone.utc), config=config)
+            },
+        })
 
-    gps = f" distance_m={track.distance_m(stats.published):.1f}" if track else \
-          " gps=off"
     print(f"run_id={stats.run_id} offered={stats.offered} "
           f"{'CANCELLED ' if stats.cancelled else ''}"
-          f"published={stats.published} dropped={stats.dropped}{gps}")
+          f"published={stats.published} dropped={stats.dropped} "
+          f"distance_m={track.distance_m(stats.published):.1f}")
 
 
 if __name__ == "__main__":

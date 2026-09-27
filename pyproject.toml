@@ -16,8 +16,8 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8.3", "pytest-timeout>=2.3", "httpx>=0.27"]
-# The YOLOv12s detector's runtime. A group, not a core dependency, so the pipeline and
-# its tests still install without torch. ultralytics is AGPL-3.0 (Licence Register).
+# The YOLOv12s detector's runtime. A group, not a core dependency, so the read API and
+# dashboard still install without torch. ultralytics is AGPL-3.0 (Licence Register).
 yolo = ["ultralytics>=8.3.100", "torch", "torchvision"]
 
 [tool.uv]
@@ -44,10 +44,8 @@ build-backend = "hatchling.build"
 packages = ["src/edgecv"]
 
 [tool.pytest.ini_options]
-# "." lets tests import the top-level `scripts` package (the fixture generator).
-# Confined to pytest's import resolution, not production runs. Don't add a
-# top-level directory whose name shadows a real dependency.
-pythonpath = ["src", "."]
+# Every test is end to end: live Postgres + Redis, the RDD2022 test split and the
+# YOLOv12s weights (`make up weights dataset`). See tests/e2e/.
+pythonpath = ["src"]
 testpaths = ["tests"]
-markers = ["integration: requires docker compose services running"]
-timeout = 120
+timeout = 300

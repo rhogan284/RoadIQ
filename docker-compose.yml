@@ -6,11 +6,8 @@ x-app: &app
   environment:
     PG_DSN: postgresql://edgecv:edgecv@postgres:5432/edgecv
     REDIS_URL: redis://redis:6379/0
-    # Overridable so a measurement run can own a fresh store: bytes-per-km
-    # totals the store, and snippets carry no run linkage, so a store shared
-    # across runs cannot be attributed to one. `BLOB_ROOT=/blobs/m2-01 make
-    # bench-bytes` is the practical workaround until a run_snippets join
-    # table exists.
+    # Overridable so a run can own a fresh store: snippets carry no run linkage,
+    # so a store shared across runs cannot be attributed to one.
     BLOB_ROOT: ${BLOB_ROOT:-/blobs}
     # Overridable so a benchmark sweep can vary the buffer depth: the whole
     # point of a bounded stream is that its depth is a tuning parameter, and
@@ -20,7 +17,6 @@ x-app: &app
     FRAME_ROOT: /app/data
   volumes:
     - blobs:/blobs
-    - ./tests/fixtures/generated:/app/tests/fixtures/generated:ro
     # RDD2022 (make dataset) and the model weights (make weights). Read-only: the
     # dataset is evidence, and nothing in the pipeline has a reason to write to it.
     - ./data:/app/data:ro
@@ -68,8 +64,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       BLOB_ROOT: ${BLOB_ROOT:-/blobs}
       FRAMES_MAXLEN: "${FRAMES_MAXLEN:-1000}"
-      # Shervin's detector by default. DETECTOR=threshold restores the classical
-      # baseline; YOLO_WEIGHTS=weights/yolo12s_rdd2022_continued.pt swaps in his v4.
+      # Shervin's detector. YOLO_WEIGHTS=weights/yolo12s_rdd2022_continued.pt swaps
+      # in his v4.
       DETECTOR: ${DETECTOR:-yolo12s}
       YOLO_WEIGHTS: ${YOLO_WEIGHTS:-weights/yolo12s_RDD2022_best.pt}
       # Two replicas each defaulting to every core thrash each other; split them.
@@ -77,23 +73,22 @@ services:
     deploy:
       replicas: ${WORKERS:-2}
 
+  # One-shot, not a long-running service: `make e2e` runs it with the replay arguments.
   feedsim:
     <<: *app
-    command: >
-      python -m edgecv.feedsim.main
-      --frames 600 --fps 15 --prevalence 0.03
+    profiles: ["tools"]
+    command: python -m edgecv.feedsim.main
     depends_on:
       redis: {condition: service_healthy}
       postgres: {condition: service_healthy}
       writer: {condition: service_started}
 
-  # Measurement harness, not a long-running service: `make bench-bytes` runs it
-  # once. It needs the blobs volume, which is why it is a compose service at all
-  # rather than a host script -- the store lives in the volume, not the repo.
+  # Accuracy evaluation, one-shot: `make e2e` and `make evaluate` run it. A compose
+  # service rather than a host script because it reads the blobs volume.
   bench:
     <<: *app
     profiles: ["tools"]
-    command: python -m edgecv.bench.main
+    command: python -m edgecv.bench.evaluate --load-gt data/rdd2022/ground_truth.json
 
   # Component 11. Always-on: re-segments any run whose results moved since its last
   # pass (16 Sep decision: the system is always-on, segmentation is its own component).
