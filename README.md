@@ -18,46 +18,137 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
 
 ## End-to-end demo — RDD2022 through every component
 
-    uv sync --group yolo
-    make weights          # YOLOv12s road-damage weights → weights/ (19 MB, gitignored)
-    make dataset          # RDD2022 test split → data/rdd2022/ (5,758 images, ~1.6 GB, gitignored)
-    make e2e              # stack up, replay the whole split, segment, score; ~13 min on an M-series Mac
-    open http://localhost:8000     # the product dashboard (components 7 + 8)
+The working demo for owner meeting 5 (30 Sep 2026): the RDD2022 test split replayed along
+real Sydney streets through every component, into a live dashboard.
+Design, decisions and every change made on the way:
+`docs/superpowers/specs/2026-09-27-e2e-demo-design.md`.
+
+### Setup (once)
+
+    uv sync --group yolo    # + ultralytics / CPU torch for the YOLOv12s detector
+    make weights            # YOLOv12s road-damage weights → weights/ (19 MB, gitignored)
+    make dataset            # RDD2022 test split → data/rdd2022/ (5,758 images, ~1.6 GB, gitignored)
+
+Already running `make up` on 5432/6379? Give the demo its own project and ports with a
+local `.env` (gitignored; Compose reads it for every command, so nothing can land on your
+dev stack by accident):
+
+    COMPOSE_PROJECT_NAME=roadiq-e2e
+    PG_PORT=55432
+    REDIS_PORT=56379
+
+and prefix host-side commands with
+`PG_DSN=postgresql://edgecv:edgecv@localhost:55432/edgecv REDIS_URL=redis://localhost:56379/0`.
+
+### Run it
+
+    make stack                     # redis, postgres, writer, 2 workers, segmenter, runner, api, dashboard
+    open http://localhost:8000     # product dashboard (components 7 + 8)
     open http://localhost:8501     # pipeline observability: coverage + bus health (component 12)
 
-`make e2e` replays every test image once, along real Ultimo / Chippendale / Glebe streets
-(`src/edgecv/roads/sydney_demo.geojson`, © OpenStreetMap contributors, ODbL), through
-feed-sim → Redis → 2 × YOLOv12s workers → writer → Postgres + blob store, then runs the
-segmenter (detections → `defect_instances` → `segment_condition`) and scores the run
-against RDD2022 ground truth into `bench_runs`. `FPS=12 make e2e` to push harder;
-`WORKERS=3`, `DETECTOR=threshold`, and `YOLO_WEIGHTS=weights/<file>.pt` are the knobs.
+Then either press **＋ New run** on the dashboard, or from a terminal:
 
-While a run is live the dashboard refreshes every 5 s and follows the newest run. The
-vehicle marker (1 s) is the newest frame on the bus, and its trail is what has landed, so
-the gap is the pipeline's lag. Click **● LIVE**, or open `/static/index.html#log`, for a
-per-frame log in landing order. Each run drives a **new random route** over the council streets, side streets included,
-sized so the images run out as the route does (`--route-seed N` to repeat one, `--route-mode
-loop` for the old fixed loop); the dotted blue line on the map is the road still ahead.
-The fixed alternative is a closed 4.7 km main-road loop
-(`roads.DEMO_LOOP`), 72 % on council roads, crossing state arterials (drawn grey, "not
-ours", never scored) only where the council network has no way round. `--route-mode cover`
-restores the old drive over every street. Grey dashed legs are where the car drove but
-nothing was scored (state roads, turns). **＋ New run** in the top bar starts a run from the dashboard (whole split, 1,000 or 300
-images; 4/8/12 fps; random route or the fixed loop; optional seed) — `POST
-/api/runs/start`, which launches `edgecv.runner` (the in-container equivalent of `make
-e2e`) and refuses while another run is feeding. **❚❚ Pause / ■ Cancel** sit next to the LIVE badge
-(`POST /api/runs/{id}/control` with `pause`, `resume` or `cancel`).
+    make e2e                       # FPS=12 make e2e to push past what the workers can keep up with
 
-Your existing `make up` stack already on 5432/6379? Run the demo beside it:
-`COMPOSE_PROJECT_NAME=roadiq-e2e PG_PORT=55432 REDIS_PORT=56379 PG_DSN=postgresql://edgecv:edgecv@localhost:55432/edgecv REDIS_URL=redis://localhost:56379/0 make e2e`.
+A run replays the images through feed-sim → Redis → YOLOv12s workers → writer → Postgres +
+blob store, waits for the pipeline to drain, runs the segmenter (detections →
+`defect_instances` → `segment_condition`) and scores the run against RDD2022 ground truth
+into `bench_runs`. The whole split takes ~12 min at 8 fps on an M-series Mac.
 
-Result of the first full run (2026-09-27, public `rezzzq` base weights): 5,758/5,758 frames,
-0 dropped, 8.0 fps, p50 166 ms / p95 336 ms per frame; box-level P 0.888 · R 0.835 ·
-F1 0.861 at IoU ≥ 0.5 on D00/D10/D20. **Two caveats that must travel with those numbers:**
-the mirror's "pothole" label is really RDD "other corruption", so D40 is unscored (see
-`scripts/fetch_rdd2022.py`); and the public checkpoint's training split is unknown, so it may
-have seen these images — rerun with Shervin's continued weights before quoting accuracy.
-Design and decisions: `docs/superpowers/specs/2026-09-27-e2e-demo-design.md`.
+### The dashboard
+
+| Feature | What it shows |
+|---|---|
+| Stat chips | km assessed (+ metres not assessed), defects on the register / to review, **frames accounted for** (landed + counted drops ÷ offered, with frames in flight and dropped), this run's crops uploaded vs raw bytes captured |
+| Network condition map | 100 m council segments coloured Good ≥70 / Fair 40–69 / Poor <40 (index v0), unsurveyed segments dashed, state roads grey ("not ours", never scored), defect dots (amber = awaiting review) |
+| Vehicle | arrow at the newest frame on the bus, rotated to its heading; trail of landed frames behind it — the gap is the pipeline's lag |
+| Planned route | the run's route, dotted ahead of the car, faint behind it |
+| Driven, not surveyed | grey dashed legs where the car drove but nothing was scored (state roads, turns) |
+| Work list | worst-first segments, change against the authority's previous run, CSV export as a work order |
+| Evidence panel | the frame the vehicle saw with every box on it (solid = accepted, dashed amber = review), HUD, metadata, **Confirm / Reject / Add to work order**; review queue ‹ › |
+| Benchmark | per-class precision / recall / F1 and latency for the run |
+| **● LIVE** | click for the frame log: one line per frame in landing order (`#log` deep link) |
+| **❚❚ Pause / ▶ Resume / ■ Cancel** | control a live run; cancel keeps what was sent and still scores it |
+| **＋ New run** | whole split, 1,000 or 300 images · 4 / 8 / 12 fps · random route or the fixed loop · optional seed (`#new` deep link) |
+
+Live runs refresh every 5 s (vehicle every 1 s) and the page follows the newest run
+unless you pick an older one from the run menu.
+
+### Routes
+
+Each run drives a **new random route** over the council streets, side streets included,
+sized so the images run out as the route does (no second lap). At each junction it takes
+an undriven street, weighted to carry straight on; when stuck it takes the cheapest path
+to the nearest undriven street (state roads only as connectors); dead-end stubs ≤150 m are
+left out. Re-driving is 18–25 % over five seeds — a street grid cannot be covered without
+repeating some blocks. The planned route and its seed are written to `survey_runs.config`
+before the first frame.
+
+- `--route-seed N` repeats a route; `--route-mode loop` is a fixed 4.7 km main-road loop;
+  `--route-mode cover` drives every street (with jumps between road pieces).
+- The network (`src/edgecv/roads/sydney_demo.geojson`, © OpenStreetMap contributors, ODbL)
+  is Ultimo / Chippendale / Glebe council roads plus the state arterials that join them
+  (`council: false`).
+- A frame snaps to a segment only within 15 m **and** if the vehicle's heading runs along
+  it (±30°), so a frame on Harris St never credits a defect to a side street.
+
+### Services added for the demo
+
+| Service | Component | Role |
+|---|---|---|
+| `worker` | 3 + 4 | now runs Shervin's YOLOv12s by default (`DETECTOR=yolo12s`); `DETECTOR=threshold` restores the baseline |
+| `segmenter` | 11 | always-on: snap, cluster into `defect_instances`, score `segment_condition` (recompute-and-replace per run) |
+| `api` | 7 + 8 | FastAPI read layer; serves the dashboard at `/` |
+| `runner` | harness | runs **＋ New run** requests from a Redis queue (feed-sim → drain → segmenter → bench), in its own container so an API redeploy can't kill a run |
+| `dashboard` | 12 | the Streamlit coverage + bus-health panel, unchanged |
+
+### Read API
+
+| Endpoint | |
+|---|---|
+| `GET /api/runs`, `/api/runs/{id}/summary`, `/segments.geojson`, `/worklist`, `/instances`, `/bench` | the dashboard's panels |
+| `GET /api/instances/{run}/{cluster_key}`, `/api/frames/{run}/{seq}/image`, `/api/blobs/{kind}/{sha}` | evidence panel |
+| `POST /api/instances/{run}/{cluster_key}/review` | `confirmed` / `rejected` / `reclassified` / `pending` → `instance_reviews`, then re-score |
+| `GET /api/runs/{id}/position`, `/route`, `/track`, `/log`; `GET /api/network` | vehicle, planned route, driven legs, frame log, state roads |
+| `POST /api/runs/start`, `GET /api/runner` | start a run (409 while another is feeding), runner status |
+| `POST /api/runs/{id}/control` | `pause` / `resume` / `cancel` |
+
+### Knobs
+
+`FPS`, `WORKERS` (default 2), `WORKER_THREADS`, `DETECTOR`, `YOLO_WEIGHTS`,
+`FRAMES_MAXLEN` (bus depth, default 1,000). To swap in Shervin's own weights: put
+`yolo12s_rdd2022_continued.pt` in `weights/` and set
+`YOLO_WEIGHTS=weights/yolo12s_rdd2022_continued.pt`. The weights hash is part of the
+detector's `params`, so a swap is a new `detectors` row and benchmark rows never mix models.
+
+### Results so far (2026-09-27, public `rezzzq` base weights)
+
+- Whole split at 8 fps: 5,758 / 5,758 frames, 0 dropped, 8.0 fps, p50 166 ms / p95 336 ms
+  per frame; box-level P 0.888 · R 0.835 · F1 0.861 at IoU ≥ 0.5 on D00/D10/D20.
+- Whole split at 12 fps: the workers land ~8–9 fps, the 1,000-deep bus fills after ~4 min,
+  and 600 frames are refused and counted — the bounded-buffer design working as intended.
+- Storage: ~225 MB of crops for 1.63 GB captured (~7×). Crops are colour now (the worker
+  decodes colour for YOLO), so this is not comparable with the grayscale M2 figure below.
+
+**Caveats that must travel with the accuracy numbers:**
+
+1. **Pothole (D40) is unscored.** The `dronefreak/RDD2022` mirror's "pothole" label is really
+   RDD "other corruption" (manholes, grates, faded lines — checked by eye) and it dropped the
+   real potholes; see `scripts/fetch_rdd2022.py`.
+2. **The public checkpoint may have seen these images** — its training split is unknown, and
+   F1 0.86 is well above Shervin's mAP50 of 0.54. Rerun with his continued weights, which
+   never saw this split, before quoting accuracy.
+3. **The condition index is v0**, a PCI-style density deduct standing in for Ilana's R-I3
+   (`segmenter/index.py`). A shuffled replay has no spatial structure, so segment scores
+   cluster; a real drive would not.
+
+### Known limits
+
+- `snippets.bytes` is still a writer placeholder (I2); per-run storage is measured on disk
+  from the run's crop hashes. Thumbnails are not linked to a run.
+- A run started from the dashboard stops if the `runner` container is restarted; it is
+  left open and can be cancelled.
+- Partitioning is untouched: frames still land in `frames_default` (ILC T2 work).
 
 ## Architecture
 
@@ -70,6 +161,11 @@ feed-sim is the exception to that split: it also registers each run in Postgres'
 on the edge side of the seam -- an accepted trade for this milestone, since feed-sim is a
 test harness standing in for both the device and the run-registration step, not a
 statement that the real device will write to Postgres directly.
+
+Services: `feedsim` (1) · `redis` (2, the bus) · `worker` ×2 (3 + 4) · `writer` (5) ·
+blob store volume (6) · `api` (7 + 8) · `bench` (9) · `segmenter` (11) · `dashboard` (12),
+plus `postgres` and the demo's `runner`. Component 10 (capture) is Dexter's phone rig and
+is replaced here by feed-sim replaying the dataset along a route.
 
 See `docs/` and the design spec for detail.
 
