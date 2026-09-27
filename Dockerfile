@@ -8,6 +8,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev
+# --group yolo: the YOLOv12s detector's runtime (CPU-only torch on Linux).
+RUN uv sync --frozen --no-dev --group yolo
 
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1

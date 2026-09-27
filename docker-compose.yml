@@ -16,14 +16,20 @@ x-app: &app
     # point of a bounded stream is that its depth is a tuning parameter, and
     # forcing drops on purpose is how the coverage-gap reporting gets exercised.
     FRAMES_MAXLEN: "${FRAMES_MAXLEN:-1000}"
+    # Frames are served back to the dashboard only from under this directory.
+    FRAME_ROOT: /app/data
   volumes:
     - blobs:/blobs
     - ./tests/fixtures/generated:/app/tests/fixtures/generated:ro
+    # RDD2022 (make dataset) and the model weights (make weights). Read-only: the
+    # dataset is evidence, and nothing in the pipeline has a reason to write to it.
+    - ./data:/app/data:ro
+    - ./weights:/app/weights:ro
 
 services:
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["${REDIS_PORT:-6379}:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -39,7 +45,7 @@ services:
       POSTGRES_USER: edgecv
       POSTGRES_PASSWORD: edgecv
       POSTGRES_DB: edgecv
-    ports: ["5432:5432"]
+    ports: ["${PG_PORT:-5432}:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U edgecv"]
       interval: 2s
@@ -57,8 +63,19 @@ services:
     # replica a hostname-derived identity instead so the two consumers in the
     # "workers" group are actually distinct.
     command: sh -c 'WORKER_ID="worker-$$(cat /etc/hostname)" python -m edgecv.worker.main'
+    environment:
+      PG_DSN: postgresql://edgecv:edgecv@postgres:5432/edgecv
+      REDIS_URL: redis://redis:6379/0
+      BLOB_ROOT: ${BLOB_ROOT:-/blobs}
+      FRAMES_MAXLEN: "${FRAMES_MAXLEN:-1000}"
+      # Shervin's detector by default. DETECTOR=threshold restores the classical
+      # baseline; YOLO_WEIGHTS=weights/yolo12s_rdd2022_continued.pt swaps in his v4.
+      DETECTOR: ${DETECTOR:-yolo12s}
+      YOLO_WEIGHTS: ${YOLO_WEIGHTS:-weights/yolo12s_RDD2022_best.pt}
+      # Two replicas each defaulting to every core thrash each other; split them.
+      OMP_NUM_THREADS: "${WORKER_THREADS:-6}"
     deploy:
-      replicas: 2
+      replicas: ${WORKERS:-2}
 
   feedsim:
     <<: *app
@@ -78,6 +95,20 @@ services:
     profiles: ["tools"]
     command: python -m edgecv.bench.main
 
+  # Component 11. Always-on: re-segments any run whose results moved since its last
+  # pass (16 Sep decision: the system is always-on, segmentation is its own component).
+  segmenter:
+    <<: *app
+    command: python -m edgecv.segmenter.main
+
+  # Component 7 (read API) + component 8 (the product dashboard, served at /).
+  api:
+    <<: *app
+    command: uvicorn edgecv.api.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+
+  # Component 12 — pipeline observability (coverage + bus health). No longer the
+  # product dashboard; that is the api service's page on :8000.
   dashboard:
     <<: *app
     command: streamlit run src/edgecv/dashboard/app.py --server.port 8501 --server.address 0.0.0.0

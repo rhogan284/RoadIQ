@@ -19,6 +19,7 @@ from edgecv.bus.consumer import FrameConsumer
 from edgecv.config import Settings
 from edgecv.contracts.detection import Detector, InferenceResult
 from edgecv.contracts.frame import FrameEnvelope
+from edgecv.detectors.registry import build_detector
 from edgecv.detectors.threshold import ThresholdDetector
 
 CROP_PADDING_PX = 16
@@ -35,13 +36,16 @@ LOST_IN_FLIGHT_KEY = "stats:lost_in_flight"
 
 
 def _decode(envelope: FrameEnvelope) -> np.ndarray:
+    # Colour, not grayscale: the YOLO detector was trained on colour frames, and the
+    # threshold detector converts to gray itself. Crops and thumbnails are therefore
+    # colour too, so bytes-per-km is higher than the M2 (grayscale) figure.
     if envelope.transport == "inline":
         assert envelope.payload is not None
         buffer = np.frombuffer(envelope.payload, dtype=np.uint8)
-        image = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     else:
         assert envelope.path is not None
-        image = cv2.imread(envelope.path, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(envelope.path, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"could not decode frame {envelope.source_ref}")
     return image
@@ -121,8 +125,10 @@ def process_one(envelope: FrameEnvelope, *, blobstore: BlobStore, worker_id: str
 
 
 def _handle(entry_id, envelope, *, consumer: FrameConsumer, blobstore: BlobStore,
-            worker_id: str, client: redis.Redis, results_stream: str) -> None:
-    outcome = process_one(envelope, blobstore=blobstore, worker_id=worker_id)
+            worker_id: str, client: redis.Redis, results_stream: str,
+            detector: Detector | None = None) -> None:
+    outcome = process_one(envelope, blobstore=blobstore, worker_id=worker_id,
+                          detector=detector)
     client.xadd(results_stream, {"json": outcome.to_json()})
     consumer.ack(entry_id)
 
@@ -145,7 +151,7 @@ def _record_lost(client: redis.Redis, entry_ids: list[str], *,
 
 def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
                       worker_id: str, client: redis.Redis,
-                      results_stream: str) -> int:
+                      results_stream: str, detector: Detector | None = None) -> int:
     """Fully claim every currently-idle-enough pending entry, not just one
     XAUTOCLAIM's worth.
 
@@ -171,7 +177,8 @@ def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
     while outcome.progressed:
         for entry_id, envelope in outcome.deliveries:
             _handle(entry_id, envelope, consumer=consumer, blobstore=blobstore,
-                    worker_id=worker_id, client=client, results_stream=results_stream)
+                    worker_id=worker_id, client=client, results_stream=results_stream,
+                    detector=detector)
             processed += 1
         if outcome.lost_entry_ids:
             _record_lost(client, outcome.lost_entry_ids, worker_id=worker_id)
@@ -187,6 +194,8 @@ def main() -> None:
                              group="workers", consumer=worker_id)
     consumer.ensure_group()
     blobstore = BlobStore(root=settings.blob_root)
+    # Built once: loading YOLO weights per frame would dominate latency.
+    detector = build_detector()
 
     running = True
 
@@ -197,19 +206,21 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    print(f"{worker_id} started", flush=True)
+    print(f"{worker_id} started detector={detector.info.name}/{detector.info.version}",
+          flush=True)
     while running:
         batch = consumer.read(count=READ_COUNT)
         if not batch:
             # Nothing new — take over anything a dead worker left in flight,
             # draining the whole backlog rather than one XAUTOCLAIM's worth.
             _drain_reclaimed(consumer, blobstore=blobstore, worker_id=worker_id,
-                             client=client, results_stream=settings.results_stream)
+                             client=client, results_stream=settings.results_stream,
+                             detector=detector)
             continue
         for entry_id, envelope in batch:
             _handle(entry_id, envelope, consumer=consumer, blobstore=blobstore,
                     worker_id=worker_id, client=client,
-                    results_stream=settings.results_stream)
+                    results_stream=settings.results_stream, detector=detector)
 
 
 if __name__ == "__main__":

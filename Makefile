@@ -1,4 +1,4 @@
-.PHONY: install up down migrate test itest fixtures demo bench-bytes
+.PHONY: install up down migrate test itest fixtures demo bench-bytes weights dataset stack e2e evaluate
 
 # Editable-install .pth files can end up ignored by site.py (e.g. macOS marks
 # them UF_HIDDEN, or the working directory just isn't on sys.path). Setting
@@ -44,3 +44,27 @@ demo: fixtures
 # 100x target, so it can gate a build later.
 bench-bytes:
 	docker compose run --rm bench
+
+# --- E2E demo (docs/superpowers/specs/2026-09-27-e2e-demo-design.md) ---------------
+# One-time downloads, both gitignored: the YOLOv12s weights (~19 MB) and the RDD2022
+# test split (5,758 images, ~1 GB).
+weights:
+	uv run --with huggingface_hub python -m scripts.fetch_weights
+
+dataset:
+	uv run python -m scripts.fetch_rdd2022
+
+# The long-lived services. feed-sim is left out: `docker compose up` would otherwise
+# replay the synthetic fixtures into the same database on every start.
+stack:
+	docker compose up -d --build redis postgres writer worker segmenter api dashboard
+
+# Replay the whole test split along the Sydney route, wait for the writer to land every
+# frame, segment, score against ground truth. Dashboard: http://localhost:8000
+FPS ?= 8
+e2e: stack
+	uv run python -m scripts.e2e --fps $(FPS)
+
+# Re-score the latest run without replaying it.
+evaluate:
+	docker compose run --rm -T bench python -m edgecv.bench.evaluate --load-gt data/rdd2022/ground_truth.json

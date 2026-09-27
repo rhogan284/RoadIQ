@@ -30,6 +30,7 @@ from edgecv.db.migrate import apply_migrations
 from edgecv.db.repository import Repository
 from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix, SyntheticTrack
 from edgecv.feedsim.prevalence import PrevalenceSampler, pace_deadlines
+from edgecv.feedsim.route import RouteTrack
 
 #: Sydney CBD, George and Market. An arbitrary but plausible survey origin.
 DEFAULT_START = (-33.8688, 151.2093)
@@ -44,6 +45,8 @@ class FeedStats:
     offered: int
     published: int
     dropped: int
+    #: Sum of the replayed files' sizes — what a naive pipeline would have uploaded.
+    raw_bytes: int = 0
 
 
 def load_pools(manifest_path: Path) -> tuple[list[str], list[str]]:
@@ -81,19 +84,31 @@ def build_envelope(*, run_id: str, seq: int, path: str, data: bytes,
 def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
              n_frames: int, fps: float, prevalence: float, maxlen: int,
              seed: int, stream: str, transport: str = "reference",
-             track: SyntheticTrack | None = None) -> FeedStats:
+             track: SyntheticTrack | RouteTrack | None = None,
+             order: str = "sample") -> FeedStats:
+    """`order="sample"` draws with replacement at the given prevalence (benchmark runs).
+    `order="all"` replays every manifest image exactly once in a seeded shuffle, ignoring
+    `n_frames` and `prevalence` — the "run the whole dataset" mode."""
     run_id = run_id or str(uuid.uuid4())
     clean, defect = load_pools(manifest)
-    sampler = PrevalenceSampler(clean, defect, prevalence=prevalence,
-                                rng=random.Random(seed))
+    if order == "all":
+        paths = clean + defect
+        random.Random(seed).shuffle(paths)
+        n_frames = len(paths)
+        next_path = iter(paths).__next__
+    else:
+        sampler = PrevalenceSampler(clean, defect, prevalence=prevalence,
+                                    rng=random.Random(seed))
+        next_path = lambda: sampler.next()[0]  # noqa: E731
     producer = FrameProducer(client, stream=stream, maxlen=maxlen)
 
-    published = 0
+    published = raw_bytes = 0
     for seq, deadline in enumerate(
         pace_deadlines(start=time.monotonic(), fps=fps, n=n_frames)
     ):
-        path, _is_defect = sampler.next()
+        path = next_path()
         data = Path(path).read_bytes()
+        raw_bytes += len(data)
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         height, width = image.shape[:2]
 
@@ -110,7 +125,8 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
             time.sleep(remaining)
 
     return FeedStats(run_id=run_id, offered=producer.offered,
-                     published=published, dropped=producer.dropped)
+                     published=published, dropped=producer.dropped,
+                     raw_bytes=raw_bytes)
 
 
 def main() -> None:
@@ -126,6 +142,13 @@ def main() -> None:
     ap.add_argument("--authority-id", default="demo-council")
     ap.add_argument("--transport", choices=["inline", "reference"],
                     default="reference")
+    ap.add_argument("--order", choices=["sample", "all"], default="sample",
+                    help="all = every manifest image once (ignores --frames, --prevalence)")
+    ap.add_argument("--route", type=Path, default=None,
+                    help="drive along this road-network GeoJSON instead of a straight "
+                         "line (e.g. src/edgecv/roads/sydney_demo.geojson)")
+    ap.add_argument("--source-kind", choices=["synthetic", "dataset-replay", "drive"],
+                    default="synthetic")
     ap.add_argument("--no-gps", dest="gps", action="store_false", default=True,
                     help="replay without a position fix (the pre-milestone-2 "
                          "behaviour; leaves lat/lon NULL and makes "
@@ -137,10 +160,19 @@ def main() -> None:
     ap.add_argument("--gps-accuracy-m", type=float, default=DEFAULT_ACCURACY_M)
     args = ap.parse_args()
 
-    track = SyntheticTrack(
-        start=(args.start_lat, args.start_lon), bearing_deg=args.bearing,
-        speed_mps=args.speed_mps, fps=args.fps, accuracy_m=args.gps_accuracy_m,
-    ) if args.gps else None
+    if not args.manifest.exists():
+        raise SystemExit(f"manifest {args.manifest} not found — for RDD2022 run "
+                         f"`make dataset` first")
+    if not args.gps:
+        track = None
+    elif args.route:
+        track = RouteTrack.from_network(args.route, speed_mps=args.speed_mps,
+                                        fps=args.fps, accuracy_m=args.gps_accuracy_m)
+    else:
+        track = SyntheticTrack(
+            start=(args.start_lat, args.start_lon), bearing_deg=args.bearing,
+            speed_mps=args.speed_mps, fps=args.fps, accuracy_m=args.gps_accuracy_m,
+        )
 
     run_id = args.run_id or str(uuid.uuid4())
     client = redis.from_url(settings.redis_url, decode_responses=False)
@@ -155,7 +187,7 @@ def main() -> None:
         repo = Repository(conn)
         repo.upsert_run(run_id=run_id, authority_id=args.authority_id,
                         started_at=datetime.now(timezone.utc),
-                        source_kind="synthetic", source_ref=str(args.manifest),
+                        source_kind=args.source_kind, source_ref=str(args.manifest),
                         target_fps=args.fps, prevalence=args.prevalence,
                         transport=args.transport)
 
@@ -163,11 +195,20 @@ def main() -> None:
                          n_frames=args.frames, fps=args.fps,
                          prevalence=args.prevalence, maxlen=settings.frames_maxlen,
                          seed=args.seed, stream=settings.frames_stream,
-                         transport=args.transport, track=track)
+                         transport=args.transport, track=track, order=args.order)
 
         config: dict = {"frames_offered": stats.offered,
-                        "frames_dropped": stats.dropped}
-        if track is not None:
+                        "frames_dropped": stats.dropped,
+                        "raw_bytes_offered": stats.raw_bytes, "order": args.order}
+        if isinstance(track, RouteTrack):
+            config["gps_track"] = {
+                "kind": "route", "network": str(args.route),
+                "route_length_m": round(track.length_m, 1),
+                "speed_mps": args.speed_mps, "fps": args.fps,
+                "accuracy_m": args.gps_accuracy_m,
+                "expected_distance_m": round(track.distance_m(stats.published), 3),
+            }
+        elif track is not None:
             # Written so the denominator of the bytes-per-km figure can be
             # audited and the run reproduced, not just trusted.
             config["gps_track"] = {

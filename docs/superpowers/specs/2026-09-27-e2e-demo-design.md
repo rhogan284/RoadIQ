@@ -202,3 +202,23 @@ idempotent writes). They are decisions and observations, not T2 work done:
    baseline to measure a batched `COPY` against.
 4. `survey_runs.config.raw_bytes_offered` gives the raw-vs-stored ratio per run, the input
    to the retention argument.
+
+## 9. Changes made during the build (2026-09-27) — confirm or reverse
+
+1. **D5 formula changed, band thresholds kept.** The count-per-100 m deduct in §4 saturated
+   at 0/100 on every segment of the full replay (RDD2022 is selected for damage: 66 % of
+   test images are defective, ~57 frames land per 100 m, so ~150 instances per segment).
+   `segmenter/index.py` now uses **distress density** (mean share of frame area per class)
+   through a log-shaped deduct per class, combined sub-additively. That is closer to ASTM
+   D6433, whose deducts are functions of density. First full run: 14 Good, 55 Fair, 0 Poor,
+   25 insufficient coverage. Scores cluster because a shuffled replay has no spatial
+   structure — a real drive would.
+2. **Ground-truth class 3 is `other`, not D40.** The dronefreak mirror's "pothole" is RDD
+   "other corruption" (manholes, grates, faded lines — checked by eye), and the real
+   potholes were dropped by the mirror. D40 is unscored on this split; the evaluator only
+   scores classes that have ground truth.
+3. **Stored bytes come from the blob store**, not `snippets.bytes` (a writer placeholder, I2).
+4. **Compose host ports are overridable** (`PG_PORT`, `REDIS_PORT`) so the demo stack can
+   run beside a long-lived dev stack.
+5. **`tests/__init__.py` added** — ultralytics 8.4.x installs a top-level `tests` package
+   that shadowed the namespace-package test directory.

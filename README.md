@@ -16,6 +16,33 @@ UTS 41087 Applications Studio B, Spring 2026. Product owner: A/Prof Wenjing Jia.
     make demo             # full pipeline under compose
     make bench-bytes      # bytes-per-kilometre figure for the latest run
 
+## End-to-end demo — RDD2022 through every component
+
+    uv sync --group yolo
+    make weights          # YOLOv12s road-damage weights → weights/ (19 MB, gitignored)
+    make dataset          # RDD2022 test split → data/rdd2022/ (5,758 images, ~1.6 GB, gitignored)
+    make e2e              # stack up, replay the whole split, segment, score; ~13 min on an M-series Mac
+    open http://localhost:8000     # the product dashboard (components 7 + 8)
+    open http://localhost:8501     # pipeline observability: coverage + bus health (component 12)
+
+`make e2e` replays every test image once, along real Ultimo / Chippendale / Glebe streets
+(`src/edgecv/roads/sydney_demo.geojson`, © OpenStreetMap contributors, ODbL), through
+feed-sim → Redis → 2 × YOLOv12s workers → writer → Postgres + blob store, then runs the
+segmenter (detections → `defect_instances` → `segment_condition`) and scores the run
+against RDD2022 ground truth into `bench_runs`. `FPS=12 make e2e` to push harder;
+`WORKERS=3`, `DETECTOR=threshold`, and `YOLO_WEIGHTS=weights/<file>.pt` are the knobs.
+
+Your existing `make up` stack already on 5432/6379? Run the demo beside it:
+`COMPOSE_PROJECT_NAME=roadiq-e2e PG_PORT=55432 REDIS_PORT=56379 PG_DSN=postgresql://edgecv:edgecv@localhost:55432/edgecv REDIS_URL=redis://localhost:56379/0 make e2e`.
+
+Result of the first full run (2026-09-27, public `rezzzq` base weights): 5,758/5,758 frames,
+0 dropped, 8.0 fps, p50 166 ms / p95 336 ms per frame; box-level P 0.888 · R 0.835 ·
+F1 0.861 at IoU ≥ 0.5 on D00/D10/D20. **Two caveats that must travel with those numbers:**
+the mirror's "pothole" label is really RDD "other corruption", so D40 is unscored (see
+`scripts/fetch_rdd2022.py`); and the public checkpoint's training split is unknown, so it may
+have seen these images — rerun with Shervin's continued weights before quoting accuracy.
+Design and decisions: `docs/superpowers/specs/2026-09-27-e2e-demo-design.md`.
+
 ## Architecture
 
 Redis Streams is the edge/backend seam. Left of it (feed-sim, worker) is what would run on
