@@ -23,6 +23,9 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
 .urlbar select { background: transparent; color: #cfe0ea; border: 0; font: inherit;
   max-width: 330px; }
 .urlbar select option { color: var(--ink); }
+.live { color: #ff8a73; font-size: 13px; font-weight: 700; letter-spacing: .06em;
+  animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
 .chrome-meta { margin-left: auto; color: #7e8b97; font-size: 13px; white-space: nowrap; }
 
 .grid { display: grid; grid-template-columns: minmax(0, 54fr) minmax(0, 46fr); gap: 16px;

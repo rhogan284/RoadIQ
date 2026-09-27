@@ -282,6 +282,7 @@ function step(delta) {
 // ------------------------------------------------------------------ bench
 async function renderBench() {
   const b = await api(`/runs/${S.run}/bench`).catch(() => null);
+  S.benched = !!b;
   if (!b) { $("bench").innerHTML = `<p class="muted">No benchmark row yet — run <code>make evaluate</code>.</p>`; return; }
   const g = b.grid_point || {};
   const det = (g.detectors || []).map((d) => `${d.name} ${d.version}`).join(", ");
@@ -325,11 +326,57 @@ async function refresh(fit) {
 }
 
 async function loadRun(runId) {
-  Object.assign(S, { run: runId, current: null, segment: null });
+  Object.assign(S, { run: runId, current: null, segment: null, benched: false });
   S.order.clear();
   await refresh(true);
   renderBench();
   if (S.worklist.length) selectSegment(S.worklist[0].segment_id);
+}
+
+// ------------------------------------------------------------------ live mode
+// Poll every LIVE_MS. The current run's panels refresh in place (map view, selected
+// segment and the open defect are kept), and a run that starts later is followed
+// automatically unless the viewer has picked an older run from the menu.
+const LIVE_MS = 5000;
+S.follow = true;
+S.busy = false;
+
+function renderRunOptions(runs) {
+  const sel = $("run-select");
+  const keep = sel.value;
+  sel.innerHTML = runs.map((r) => `<option value="${r.run_id}">${fmtDate(r.started_at,
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ${esc(r.source_kind)} · ${r.run_id.slice(0, 8)}${r.ended_at ? "" : " · live"}</option>`).join("");
+  sel.value = keep || (runs[0] && runs[0].run_id);
+}
+
+function renderLive(run) {
+  const live = run && !run.ended_at;
+  const badge = $("live");
+  badge.hidden = !live;
+  if (live) badge.textContent = `● LIVE · ${S.summary.frames_ingested.toLocaleString()} frames landed`;
+}
+
+async function tick() {
+  if (S.busy || document.hidden) return;
+  S.busy = true;
+  try {
+    const runs = await api("/runs");
+    renderRunOptions(runs);
+    const newest = runs[0];
+    if (newest && S.follow && newest.run_id !== S.run) {
+      $("run-select").value = newest.run_id;
+      await loadRun(newest.run_id);
+    } else if (S.run) {
+      await refresh(false);
+      if (!S.current && S.worklist.length) selectSegment(S.worklist[0].segment_id);
+      if (!S.benched) renderBench();
+    }
+    renderLive(runs.find((r) => r.run_id === S.run));
+  } catch (e) {
+    console.warn("live refresh failed", e);
+  } finally {
+    S.busy = false;
+  }
 }
 
 async function boot() {
@@ -345,13 +392,18 @@ async function boot() {
   $("export").onclick = exportCsv;
   const runs = await api("/runs");
   const sel = $("run-select");
-  sel.innerHTML = runs.map((r) => `<option value="${r.run_id}">${fmtDate(r.started_at,
-    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ${esc(r.source_kind)} · ${r.run_id.slice(0, 8)}</option>`).join("");
-  sel.onchange = () => loadRun(sel.value);
-  const first = runs.find((r) => r.instances > 0) || runs[0];
-  if (!first) { $("ev-caption").textContent = "No survey runs yet — run make e2e."; return; }
+  renderRunOptions(runs);
+  sel.onchange = () => {
+    // Picking anything but the newest run stops auto-follow; picking the newest resumes it.
+    S.follow = sel.value === sel.options[0].value;
+    loadRun(sel.value);
+  };
+  setInterval(tick, LIVE_MS);
+  const first = runs[0];
+  if (!first) { $("ev-caption").textContent = "No survey runs yet — run make e2e. Waiting…"; return; }
   sel.value = first.run_id;
   await loadRun(first.run_id);
+  renderLive(first);
 }
 
 boot().catch((e) => { $("ev-caption").textContent = `Could not load: ${e.message}`; });
