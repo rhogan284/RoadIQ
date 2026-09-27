@@ -14,7 +14,9 @@ FrameConsumer.reclaim() is built to detect and correct.
 Read the "Critical knowledge" section of the dispatch brief before changing this file:
 reclaim() makes a single XAUTOCLAIM call and does not loop its own cursor, and the
 worker only calls it when a normal read() comes back empty. Both tests below mirror
-that gating explicitly (drain reads to empty, THEN loop reclaim to empty) rather than
+that gating explicitly (drain reads to empty, THEN loop reclaim until it stops
+making progress -- `progressed`, not "returned deliveries", because a page that only
+purges destroyed entries recovers nothing yet has still advanced) rather than
 polling reclaim() on a timer, and both use a finite feed published in full before any
 consumer starts, so the "read comes back empty" condition is reached quickly and
 deterministically.
@@ -114,13 +116,17 @@ def test_no_frames_lost_when_a_worker_dies(rds, clean_db, fixtures, tmp_path):
 
     reclaimed_total = 0
     while True:
-        batch = survivor.reclaim(min_idle_ms=0, count=10)
-        if not batch:
+        outcome = survivor.reclaim(min_idle_ms=0, count=10)
+        if not outcome.progressed:
             break
-        reclaimed_total += handle(batch)
+        reclaimed_total += handle(outcome.deliveries)
 
     assert reclaimed_total == read_before_death      # every orphan recovered
     assert handled + reclaimed_total == N_FRAMES
+    # Nothing was destroyed in this scenario, only orphaned. The worker died;
+    # the stream did not lose an entry. Asserted so the two failure modes stay
+    # distinguishable -- the whole point of reading XAUTOCLAIM's purged-id list.
+    assert survivor.lost_in_flight == 0
 
     while drain_once(rds, repo, stream="results", group="writers",
                      consumer="wr1", batch=100).frames:
@@ -171,3 +177,55 @@ def test_reprocessing_a_frame_twice_adds_no_extra_detections(rds, clean_db,
     repo.write_results(results)          # exact same work, delivered again
     assert count(clean_db, "SELECT count(*) FROM detections") == first
     assert count(clean_db, "SELECT count(*) FROM frames") == 10
+
+
+def test_drain_reclaimed_does_not_strand_orphans_behind_destroyed_entries(
+        rds, fixtures, tmp_path, monkeypatch):
+    """A page of destroyed entries must not end the drain.
+
+    XAUTOCLAIM pages through the PEL RECLAIM_COUNT entries at a time. If the
+    first page is entirely entries whose stream entry is gone, it recovers no
+    work -- and a loop that stops there abandons every live orphan queued behind
+    it until the next empty read, RECLAIM_IDLE_MS later at best.
+
+    Here the first 10 of 25 pending frames are destroyed, so the first
+    XAUTOCLAIM page is all tombstones and the remaining 15 are recoverable.
+    Asserting 15 is asserting that the drain kept going.
+    """
+    from edgecv.worker import main as worker_main
+
+    monkeypatch.setattr(worker_main, "RECLAIM_IDLE_MS", 0)
+    blobstore = BlobStore(root=tmp_path / "blobs")
+
+    n_total, n_destroyed = 25, worker_main.RECLAIM_COUNT
+    run_feed(rds, manifest=fixtures / "manifest.json", run_id=None,
+             n_frames=n_total, fps=1000, prevalence=0.2, maxlen=10_000,
+             seed=5, stream="frames")
+
+    doomed = FrameConsumer(rds, stream="frames", group="workers",
+                           consumer="doomed", block_ms=100)
+    doomed.ensure_group()
+    entry_ids = []
+    while len(entry_ids) < n_total:
+        batch = doomed.read(count=n_total)
+        if not batch:
+            break
+        entry_ids += [entry_id for entry_id, _e in batch]
+    assert len(entry_ids) == n_total
+
+    # Destroy the oldest 10 out from under the PEL. This is what Redis's own
+    # MAXLEN trimming does under backpressure: it evicts the OLDEST first.
+    rds.xdel("frames", *entry_ids[:n_destroyed])
+    assert rds.xpending("frames", "workers")["pending"] == n_total
+
+    survivor = FrameConsumer(rds, stream="frames", group="workers",
+                             consumer="survivor", block_ms=100)
+    survivor.ensure_group()
+    processed = worker_main._drain_reclaimed(
+        survivor, blobstore=blobstore, worker_id="survivor", client=rds,
+        results_stream="results")
+
+    assert processed == n_total - n_destroyed    # the 15 behind the tombstones
+    assert survivor.lost_in_flight == n_destroyed
+    assert int(rds.get(worker_main.LOST_IN_FLIGHT_KEY)) == n_destroyed
+    assert rds.xpending("frames", "workers")["pending"] == 0

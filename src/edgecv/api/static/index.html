@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoadIQ</title>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Component 8. Layout and palette follow _attachments/RoadIQ-Product-Mockup.gen.py:
+       chrome bar · stat chips · network map · work list | evidence card. Every number on
+       this page comes from the read API (component 7); nothing is hard-coded. -->
+  <header class="chrome">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <strong class="brand">RoadIQ</strong>
+    <label class="urlbar">
+      <span class="muted">roadiq.local/network · run</span>
+      <select id="run-select" aria-label="Survey run"></select>
+    </label>
+    <button id="live" class="live" hidden title="Show frames as they land"></button>
+    <button id="new-run" class="ctl primary-ctl" hidden title="Start a new survey run">＋ New run</button>
+    <span id="runner-note" class="runner-note" hidden></span>
+    <span id="run-ctl" class="run-ctl" hidden>
+      <button id="ctl-pause" class="ctl" title="Hold the vehicle where it is">❚❚ Pause</button>
+      <button id="ctl-cancel" class="ctl danger" title="Stop this run; keep what was sent">■ Cancel</button>
+    </span>
+    <span id="chrome-meta" class="chrome-meta"></span>
+  </header>
+
+  <main class="grid">
+    <section class="left">
+      <div class="stats">
+        <div class="card stat"><b id="s-km">–</b><span id="s-km-l">assessed this survey</span></div>
+        <div class="card stat"><b id="s-def">–</b><span id="s-def-l">defects on the register</span></div>
+        <div class="card stat"><b id="s-acc">–</b><span id="s-acc-l">frames accounted for</span></div>
+        <div class="card stat"><b id="s-mb">–</b><span id="s-mb-l">uploaded, of – captured</span></div>
+      </div>
+
+      <div class="card map-card">
+        <div class="card-head">
+          <h2>Network condition</h2>
+          <span class="muted" id="map-note">worst-first</span>
+        </div>
+        <div id="map"></div>
+      </div>
+
+      <div class="card list-card">
+        <div class="card-head">
+          <h2>Work list</h2>
+          <a href="#" id="export" class="link">Export as work order ›</a>
+        </div>
+        <div class="list-scroll"><table class="worklist">
+          <thead><tr><th>#</th><th>Segment</th><th>Condition</th><th>Defects</th>
+            <th>Change</th><th>Surveyed</th></tr></thead>
+          <tbody id="worklist"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <section class="card evidence">
+      <div class="card-head">
+        <h2 id="ev-title">Select a defect</h2>
+        <span id="ev-state" class="chip muted-chip">—</span>
+      </div>
+      <div class="queue-bar">
+        <span id="queue-label" class="muted">Review queue</span>
+        <span>
+          <button class="btn small" id="q-prev" aria-label="Previous in queue">‹</button>
+          <button class="btn small" id="q-next" aria-label="Next in queue">›</button>
+        </span>
+      </div>
+      <div class="frame-wrap">
+        <canvas id="frame" width="960" height="640"></canvas>
+        <div class="hud"><span id="hud-l"></span><span id="hud-r"></span></div>
+      </div>
+      <p class="muted caption" id="ev-caption">Click a segment, a defect dot, or a work-list row.</p>
+      <dl class="meta" id="ev-meta"></dl>
+      <div class="actions">
+        <button class="btn primary" id="btn-confirm" disabled>Confirm defect</button>
+        <button class="btn" id="btn-reject" disabled>Reject</button>
+        <button class="btn" id="btn-order" disabled>Add to work order</button>
+      </div>
+      <details class="bench" id="bench-box">
+        <summary>Detector benchmark for this run</summary>
+        <div id="bench"></div>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="new-run-dlg" class="dlg">
+    <form method="dialog" id="new-run-form">
+      <h3>New survey run</h3>
+      <p class="muted">Replays RDD2022 test images along a road route, through every component,
+        then segments and scores the run.</p>
+      <label>Images
+        <select name="max_frames">
+          <option value="">Whole test split (5,758 · ~12 min at 8 fps)</option>
+          <option value="1000">1,000 random images (~2 min)</option>
+          <option value="300">300 random images (~40 s)</option>
+        </select></label>
+      <label>Frame rate
+        <select name="fps">
+          <option value="8" selected>8 fps (workers keep up)</option>
+          <option value="4">4 fps</option>
+          <option value="12">12 fps (expect drops — the bounded bus at work)</option>
+        </select></label>
+      <label>Route
+        <select name="route_mode">
+          <option value="random" selected>Random, side streets included</option>
+          <option value="loop">Fixed main-road loop</option>
+        </select></label>
+      <label>Route seed <input name="route_seed" type="number" min="0" placeholder="blank = new random route"></label>
+      <p id="new-run-err" class="err-text"></p>
+      <menu>
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
+        <button value="start" class="btn primary" id="new-run-go">Start run</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <section id="log" class="log" hidden aria-label="Frame log">
+    <header class="log-head">
+      <b>Frame log</b>
+      <span id="log-meta" class="log-meta"></span>
+      <span class="log-actions">
+        <button id="log-pause" class="log-btn">Pause</button>
+        <button id="log-clear" class="log-btn">Clear</button>
+        <button id="log-close" class="log-btn" aria-label="Close log">✕</button>
+      </span>
+    </header>
+    <pre id="log-body" class="log-body"></pre>
+  </section>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

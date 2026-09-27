@@ -19,6 +19,7 @@ from edgecv.bus.consumer import FrameConsumer
 from edgecv.config import Settings
 from edgecv.contracts.detection import Detector, InferenceResult
 from edgecv.contracts.frame import FrameEnvelope
+from edgecv.detectors.registry import build_detector
 from edgecv.detectors.threshold import ThresholdDetector
 
 CROP_PADDING_PX = 16
@@ -28,16 +29,23 @@ THUMB_FMT = "webp"
 RECLAIM_IDLE_MS = 30_000
 READ_COUNT = 10
 RECLAIM_COUNT = 10
+# Frames destroyed after a worker accepted them. Deliberately not keyed by
+# run_id the way the producer's `stats:{run_id}:dropped` is: the entry's
+# payload is gone, so there is no run_id or seq left to key it by.
+LOST_IN_FLIGHT_KEY = "stats:lost_in_flight"
 
 
 def _decode(envelope: FrameEnvelope) -> np.ndarray:
+    # Colour, not grayscale: the YOLO detector was trained on colour frames, and the
+    # threshold detector converts to gray itself. Crops and thumbnails are therefore
+    # colour too, so bytes-per-km is higher than the M2 (grayscale) figure.
     if envelope.transport == "inline":
         assert envelope.payload is not None
         buffer = np.frombuffer(envelope.payload, dtype=np.uint8)
-        image = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     else:
         assert envelope.path is not None
-        image = cv2.imread(envelope.path, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(envelope.path, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"could not decode frame {envelope.source_ref}")
     return image
@@ -117,15 +125,33 @@ def process_one(envelope: FrameEnvelope, *, blobstore: BlobStore, worker_id: str
 
 
 def _handle(entry_id, envelope, *, consumer: FrameConsumer, blobstore: BlobStore,
-            worker_id: str, client: redis.Redis, results_stream: str) -> None:
-    outcome = process_one(envelope, blobstore=blobstore, worker_id=worker_id)
+            worker_id: str, client: redis.Redis, results_stream: str,
+            detector: Detector | None = None) -> None:
+    outcome = process_one(envelope, blobstore=blobstore, worker_id=worker_id,
+                          detector=detector)
     client.xadd(results_stream, {"json": outcome.to_json()})
     consumer.ack(entry_id)
 
 
+def _record_lost(client: redis.Redis, entry_ids: list[str], *,
+                 worker_id: str) -> None:
+    """Count frames XAUTOCLAIM found destroyed under the pending-entries list.
+
+    A refused frame is a *known* gap: the producer counted it and the run knows
+    which frame it was. This is the unknown kind — a worker had accepted the
+    frame and the entry was destroyed beneath it, taking run_id, seq and
+    position with it. The count is the alarm. The metres come from the coverage
+    report, which sees the same loss as a missing `frames` row and measures the
+    hole between its surviving neighbours.
+    """
+    client.incrby(LOST_IN_FLIGHT_KEY, len(entry_ids))
+    print(f"{worker_id} LOST {len(entry_ids)} in-flight frame(s) — stream entries "
+          f"destroyed while pending: {', '.join(entry_ids)}", flush=True)
+
+
 def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
                       worker_id: str, client: redis.Redis,
-                      results_stream: str) -> int:
+                      results_stream: str, detector: Detector | None = None) -> int:
     """Fully claim every currently-idle-enough pending entry, not just one
     XAUTOCLAIM's worth.
 
@@ -137,17 +163,26 @@ def _drain_reclaimed(consumer: FrameConsumer, *, blobstore: BlobStore,
     worker left behind for many seconds if there are more idle entries than
     one call covers — every extra batch waits for another empty read, and
     FrameConsumer.read() blocks for block_ms (2s default) each time there is
-    nothing new. Looping here until reclaim() returns empty drains the
+    nothing new. Looping here until reclaim() stops making progress drains the
     entire backlog in one pass instead, with no added delay.
+
+    The loop condition is `progressed`, not "returned deliveries". An
+    XAUTOCLAIM page that only purges destroyed entries recovers no work but has
+    still advanced through the PEL, and stopping on it strands the live orphans
+    sitting behind it — which is the bug this looked like before the purged-id
+    list was read at all.
     """
     processed = 0
-    batch = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
-    while batch:
-        for entry_id, envelope in batch:
+    outcome = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
+    while outcome.progressed:
+        for entry_id, envelope in outcome.deliveries:
             _handle(entry_id, envelope, consumer=consumer, blobstore=blobstore,
-                    worker_id=worker_id, client=client, results_stream=results_stream)
+                    worker_id=worker_id, client=client, results_stream=results_stream,
+                    detector=detector)
             processed += 1
-        batch = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
+        if outcome.lost_entry_ids:
+            _record_lost(client, outcome.lost_entry_ids, worker_id=worker_id)
+        outcome = consumer.reclaim(min_idle_ms=RECLAIM_IDLE_MS, count=RECLAIM_COUNT)
     return processed
 
 
@@ -159,6 +194,8 @@ def main() -> None:
                              group="workers", consumer=worker_id)
     consumer.ensure_group()
     blobstore = BlobStore(root=settings.blob_root)
+    # Built once: loading YOLO weights per frame would dominate latency.
+    detector = build_detector()
 
     running = True
 
@@ -169,19 +206,21 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    print(f"{worker_id} started", flush=True)
+    print(f"{worker_id} started detector={detector.info.name}/{detector.info.version}",
+          flush=True)
     while running:
         batch = consumer.read(count=READ_COUNT)
         if not batch:
             # Nothing new — take over anything a dead worker left in flight,
             # draining the whole backlog rather than one XAUTOCLAIM's worth.
             _drain_reclaimed(consumer, blobstore=blobstore, worker_id=worker_id,
-                             client=client, results_stream=settings.results_stream)
+                             client=client, results_stream=settings.results_stream,
+                             detector=detector)
             continue
         for entry_id, envelope in batch:
             _handle(entry_id, envelope, consumer=consumer, blobstore=blobstore,
                     worker_id=worker_id, client=client,
-                    results_stream=settings.results_stream)
+                    results_stream=settings.results_stream, detector=detector)
 
 
 if __name__ == "__main__":

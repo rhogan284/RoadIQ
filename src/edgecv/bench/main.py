@@ -19,7 +19,8 @@ import argparse
 import psycopg
 
 from edgecv.bench.bytes_per_km import TARGET_FACTOR, BytesPerKm
-from edgecv.bench.collect import collect_run, latest_run_id, measure_run
+from edgecv.bench.collect import latest_run_id, measure_run, run_coverage
+from edgecv.bench.coverage import CoverageReport
 from edgecv.blobstore.store import BlobStore
 from edgecv.config import Settings
 
@@ -36,9 +37,9 @@ def human_bytes(n: float) -> str:
     raise AssertionError("unreachable")
 
 
-def format_report(run_id: str, result: BytesPerKm, *, n_with_fix: int,
-                  store_root: str) -> str:
-    missing = result.n_frames - n_with_fix
+def format_report(run_id: str, result: BytesPerKm, *,
+                  coverage: CoverageReport, store_root: str) -> str:
+    missing = coverage.frames_without_fix
     verdict = "PASS" if result.meets_target else "FAIL"
     factor = ("inf (nothing stored)" if result.reduction_factor == float("inf")
               else f"{result.reduction_factor:.1f}x")
@@ -46,8 +47,8 @@ def format_report(run_id: str, result: BytesPerKm, *, n_with_fix: int,
         "RoadIQ -- bytes per kilometre (success criterion 1)",
         "=" * 58,
         f"  run_id          {run_id}",
-        f"  frames          {result.n_frames}  ({n_with_fix} with a GPS fix, "
-        f"{missing} without)",
+        f"  frames          {result.n_frames}  "
+        f"({result.n_frames - missing} with a GPS fix, {missing} without)",
         f"  distance        {result.distance_km:.3f} km",
         "",
         f"  stored          {human_bytes(result.stored_bytes):>10}"
@@ -57,6 +58,14 @@ def format_report(run_id: str, result: BytesPerKm, *, n_with_fix: int,
         "",
         f"  reduction       {factor}   (target {result.target_factor:.0f}x)"
         f"   {verdict}",
+        "",
+        "  -- coverage (success criterion 2) " + "-" * 24,
+        f"  assessed        {coverage.assessed_m:>10.1f} m",
+        f"  not assessed    {coverage.gap_m:>10.1f} m"
+        f"   ({coverage.missing_frames} frame(s) lost in "
+        f"{coverage.gap_count} gap(s))",
+        f"  largest gap     {coverage.largest_gap_m:>10.1f} m",
+        f"  coverage        {coverage.coverage_pct:>9.1f}%",
         "",
         f"  stored bytes measured from {store_root}",
     ]
@@ -80,10 +89,10 @@ def main() -> None:
     store = BlobStore(root=settings.blob_root)
     with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
         run_id = args.run_id or latest_run_id(conn)
-        inputs = collect_run(conn, run_id)
         result = measure_run(conn, store, run_id, target_factor=args.target)
+        coverage = run_coverage(conn, run_id)
 
-    print(format_report(run_id, result, n_with_fix=inputs.n_frames_with_fix,
+    print(format_report(run_id, result, coverage=coverage,
                         store_root=str(settings.blob_root)))
     raise SystemExit(0 if result.meets_target else 1)
 

@@ -33,6 +33,7 @@ from pathlib import Path
 import psycopg
 
 from edgecv.bench.bytes_per_km import TARGET_FACTOR, BytesPerKm, measure
+from edgecv.bench.coverage import CoverageReport, coverage_from_rows
 from edgecv.blobstore.store import BlobStore
 from edgecv.geo import LatLon, path_length_m
 
@@ -138,14 +139,42 @@ def collect_run(conn: psycopg.Connection, run_id: str) -> RunInputs:
     )
 
 
+def run_coverage(conn: psycopg.Connection, run_id: str) -> CoverageReport:
+    """Metres of road assessed vs lost for one run (success criterion 2).
+
+    Reads every frame row including the ones with no fix, because the two kinds
+    of absence mean opposite things — see `coverage.py`. A missing seq is road
+    nobody assessed; a null lat on a present row is road we assessed but cannot
+    place.
+    """
+    _assert_run_exists(conn, run_id)
+    with conn.cursor() as cur:
+        cur.execute("SELECT seq, lat, lon FROM frames WHERE run_id = %s "
+                    "ORDER BY seq", (run_id,))
+        rows = [(int(seq), None if lat is None else float(lat),
+                 None if lon is None else float(lon))
+                for seq, lat, lon in cur.fetchall()]
+    return coverage_from_rows(rows)
+
+
 def measure_run(conn: psycopg.Connection, store: BlobStore, run_id: str, *,
                 target_factor: float = TARGET_FACTOR) -> BytesPerKm:
-    """The Week 6 milestone figure for one run."""
+    """The Week 6 milestone figure for one run.
+
+    Divides by the **assessed** distance, not the whole attempted track. The
+    stored bytes and the every-frame baseline both come from the frames we
+    actually processed, so the road those frames covered is the matching
+    denominator. Spreading them over road nobody surveyed would report a smaller
+    number than the truth — invisible in the ratio, since both sides divide by
+    the same figure, but wrong in the per-kilometre absolutes that go in the
+    report.
+    """
     inputs = collect_run(conn, run_id)
+    coverage = run_coverage(conn, run_id)
     return measure(
         stored_bytes=store.total_bytes(),
         n_frames=inputs.n_frames,
         mean_frame_bytes=inputs.mean_frame_bytes,
-        distance_m=inputs.distance_m,
+        distance_m=coverage.assessed_m,
         target_factor=target_factor,
     )

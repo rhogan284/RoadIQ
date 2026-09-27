@@ -82,12 +82,72 @@ def test_reclaim_recovers_a_dead_consumers_frames(rds, producer):
     dead = consumer(rds, "dead")
     dead.read(count=1)                       # read but never ack — consumer "dies"
     survivor = consumer(rds, "survivor")
-    reclaimed = survivor.reclaim(min_idle_ms=0, count=10)
-    assert [e.seq for _i, e in reclaimed] == [1]
+    outcome = survivor.reclaim(min_idle_ms=0, count=10)
+    assert [e.seq for _i, e in outcome.deliveries] == [1]
+    assert outcome.lost_entry_ids == []      # nothing was destroyed, only orphaned
+    assert outcome.progressed is True
 
 
 def test_reclaim_ignores_recently_delivered_frames(rds, producer):
     producer.publish(env(1))
     consumer(rds, "busy").read(count=1)
     survivor = consumer(rds, "survivor")
-    assert survivor.reclaim(min_idle_ms=60_000, count=10) == []
+    outcome = survivor.reclaim(min_idle_ms=60_000, count=10)
+    assert outcome.deliveries == []
+    assert outcome.lost_entry_ids == []
+    assert outcome.progressed is False       # a genuinely idle pass
+
+
+def test_reclaim_reports_entries_destroyed_under_the_pel(rds, producer):
+    """A pending entry whose stream entry is gone is a frame lost in flight.
+
+    This is what Redis's own XADD MAXLEN / XTRIM would do to in-flight work, and
+    what the drop policy exists to avoid. XAUTOCLAIM cannot recover the data —
+    only the bookkeeping — and it reports the ids it purged as its third return
+    value. Simulated here with XDEL, which leaves the PEL in the identical state.
+    """
+    producer.publish(env(1))
+    dead = consumer(rds, "dead")
+    entry_id, _e = dead.read(count=1)[0]
+    rds.xdel("frames", entry_id)             # entry destroyed while still pending
+    assert rds.xpending("frames", "workers")["pending"] == 1   # PEL still claims it
+
+    survivor = consumer(rds, "survivor")
+    outcome = survivor.reclaim(min_idle_ms=0, count=10)
+
+    assert outcome.deliveries == []          # the payload is unrecoverable
+    assert outcome.lost_entry_ids == [entry_id]
+    assert survivor.lost_in_flight == 1
+    assert rds.xpending("frames", "workers")["pending"] == 0   # PEL now honest
+
+
+def test_reclaim_progressed_when_only_destroyed_entries_were_purged(rds, producer):
+    """Purging tombstones is progress, so a drain loop must not stop on it.
+
+    Recovering nothing and finding nothing are different outcomes. Treating them
+    the same is how live orphans queued behind a page of deletions get stranded.
+    """
+    for seq in range(2):
+        producer.publish(env(seq))
+    dead = consumer(rds, "dead")
+    ids = [entry_id for entry_id, _e in dead.read(count=2)]
+    rds.xdel("frames", *ids)
+
+    outcome = consumer(rds, "survivor").reclaim(min_idle_ms=0, count=10)
+    assert outcome.deliveries == []
+    assert sorted(outcome.lost_entry_ids) == sorted(ids)
+    assert outcome.progressed is True
+
+
+def test_reclaim_separates_recoverable_from_destroyed_in_one_pass(rds, producer):
+    """One XAUTOCLAIM page can carry both, and the two must not be conflated."""
+    producer.publish(env(1))
+    producer.publish(env(2))
+    dead = consumer(rds, "dead")
+    deliveries = dead.read(count=2)
+    doomed_id = deliveries[0][0]
+    rds.xdel("frames", doomed_id)
+
+    outcome = consumer(rds, "survivor").reclaim(min_idle_ms=0, count=10)
+    assert [e.seq for _i, e in outcome.deliveries] == [2]
+    assert outcome.lost_entry_ids == [doomed_id]
