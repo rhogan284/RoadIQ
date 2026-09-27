@@ -248,3 +248,9 @@ idempotent writes). They are decisions and observations, not T2 work done:
    re-drove ~53 %). The planned route and seed are written to `survey_runs.config` before
    the first frame; the map shows it dotted ahead of the car. `finish_run` now MERGES
    config instead of replacing it, so the start-of-run write survives.
+10. **Start a run from the dashboard.** `POST /api/runs/start` launches `edgecv.runner`
+    in the API container (it has no Docker socket): feed-sim, drain, segmenter --once and
+    bench, each as its own `python -m` process, so no component changes. One run at a
+    time (409 while any run is feeding). A container restart stops a dashboard-started
+    run. `scripts/e2e.py` shares the runner's drain logic. The "uploaded" stat chip now
+    counts this run's own crops (measured on disk), not the shared store's total.

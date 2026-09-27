@@ -203,7 +203,7 @@ function renderStats() {
   $("s-acc").textContent = `${s.frames_accounted_pct}%`;
   $("s-acc-l").textContent = `frames accounted for · ${s.frames_dropped} dropped`;
   $("s-mb").textContent = fmtBytes(s.bytes_stored);
-  $("s-mb-l").textContent = `uploaded, of ${fmtBytes(s.raw_bytes)} captured`;
+  $("s-mb-l").textContent = `crops uploaded, of ${fmtBytes(s.raw_bytes)} captured`;
   const r = s.run;
   $("chrome-meta").textContent =
     `Survey ${fmtDate(r.started_at, { day: "numeric", month: "short", year: "numeric" })}` +
@@ -482,6 +482,36 @@ async function runControl(action) {
   }
 }
 
+// ------------------------------------------------------------------ new run
+// "Starting…" until feed-sim registers the run (a few seconds of route planning), and
+// "Scoring…" after the feed ends while the runner drains, segments and benchmarks.
+async function renderRunner() {
+  const r = await api("/runner").catch(() => null);
+  const note = $("runner-note");
+  const feeding = S.live && !["cancelled", "done"].includes(S.feedState);
+  let text = "";
+  if (r && r.alive) {
+    if (r.run_id !== S.run) text = "Starting run…";
+    else if (!feeding) text = "Scoring run…";
+  }
+  note.hidden = !text;
+  note.textContent = text;
+  $("new-run").hidden = feeding || !!(r && r.alive);
+}
+
+async function startRun(form) {
+  const f = new FormData(form);
+  const body = { fps: Number(f.get("fps")), route_mode: f.get("route_mode"),
+                 max_frames: f.get("max_frames") ? Number(f.get("max_frames")) : null,
+                 route_seed: f.get("route_seed") === "" ? null : Number(f.get("route_seed")) };
+  const r = await fetch("/api/runs/start", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  S.follow = true;                        // jump to the new run as soon as it registers
+  renderRunner();
+  return r.json();
+}
+
 async function tick() {
   if (S.busy || document.hidden) return;
   S.busy = true;
@@ -499,6 +529,7 @@ async function tick() {
       if (S.live) renderTrack();
     }
     renderLive(runs.find((r) => r.run_id === S.run));
+    renderRunner();
   } catch (e) {
     console.warn("live refresh failed", e);
   } finally {
@@ -596,6 +627,19 @@ async function boot() {
   setInterval(tick, LIVE_MS);
   setInterval(() => { if (S.live && !document.hidden) renderPosition(); }, CAR_MS);
   setInterval(() => { if (!$("log").hidden && !LOG.paused) logPoll(); }, 1000);
+  $("new-run").onclick = () => { $("new-run-err").textContent = ""; $("new-run-dlg").showModal(); };
+  $("new-run-go").onclick = async (ev) => {
+    ev.preventDefault();
+    $("new-run-go").disabled = true;
+    try {
+      await startRun($("new-run-form"));
+      $("new-run-dlg").close();
+    } catch (e) {
+      $("new-run-err").textContent = `Could not start: ${e.message}`;
+    } finally {
+      $("new-run-go").disabled = false;
+    }
+  };
   $("ctl-pause").onclick = () => runControl(S.feedState === "paused" ? "resume" : "pause");
   $("ctl-cancel").onclick = () => runControl("cancel");
   $("live").onclick = () => { $("log").hidden = !$("log").hidden; if (!$("log").hidden) logPoll(); };
@@ -607,10 +651,12 @@ async function boot() {
     if (!LOG.paused) logPoll();
   };
   const first = runs[0];
-  if (!first) { $("ev-caption").textContent = "No survey runs yet — run make e2e. Waiting…"; return; }
+  if (!first) { $("ev-caption").textContent = "No survey runs yet — press ＋ New run."; return; }
   sel.value = first.run_id;
   await loadRun(first.run_id);
   renderLive(first);
+  renderRunner();
+  if (location.hash === "#new") $("new-run").click();                      // deep link
   if (location.hash === "#log") { $("log").hidden = false; logPoll(); }   // deep link for demos
 }
 

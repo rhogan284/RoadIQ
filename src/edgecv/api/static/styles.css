@@ -35,6 +35,22 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
 .ctl { background: #232a31; color: #cfe0ea; border: 1px solid #34404b; border-radius: 4px;
   padding: 3px 10px; font: 13px inherit; font-family: inherit; cursor: pointer; }
 .ctl:hover { background: #2c353e; }
+.ctl.primary-ctl { color: #fff; background: #0d6d92; border-color: #0d6d92; }
+.ctl.primary-ctl:hover { background: #0b5f80; }
+.ctl[hidden] { display: none; }
+.runner-note { color: #9fd3ea; font-size: 13px; }
+.runner-note[hidden] { display: none; }
+.dlg { border: 1px solid var(--rule); padding: 0; width: min(460px, 92vw); color: var(--ink); }
+.dlg::backdrop { background: rgba(16, 25, 29, .45); }
+.dlg form { padding: 18px 20px 14px; display: flex; flex-direction: column; gap: 10px; }
+.dlg h3 { margin: 0; font-size: 17px; }
+.dlg p { margin: 0 0 4px; font-size: 13px; }
+.dlg label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.dlg select, .dlg input { font: 14px inherit; font-family: inherit; padding: 6px 8px;
+  border: 1px solid var(--rule); color: var(--ink); text-transform: none; letter-spacing: 0; }
+.dlg menu { display: flex; justify-content: flex-end; gap: 10px; margin: 6px 0 0; padding: 0; }
+.err-text { color: var(--poor); min-height: 1em; }
 .ctl.danger { color: #ff9b8a; border-color: #5a2f28; }
 .ctl:disabled { opacity: .5; cursor: default; }
 .car { background: none; border: 0; }

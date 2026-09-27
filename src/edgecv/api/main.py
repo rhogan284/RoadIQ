@@ -12,6 +12,11 @@ the dashboard never needs a path into the blob store or the dataset.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -112,9 +117,7 @@ def summary(run_id: str) -> dict:
         scored, seg_cov = cur.fetchone()
     cfg = run["config"] or {}
     offered = cfg.get("frames_offered") or ingested
-    # From the store itself, as the bytes-per-km bench does: `snippets.bytes` is a 0
-    # placeholder the writer cannot fill (repository.py, I2).
-    stored = BlobStore(root=SETTINGS.blob_root).total_bytes()
+    stored = _run_crop_bytes(run_id)
     return {
         "run": {k: run[k] for k in ("run_id", "authority_id", "started_at", "ended_at",
                                     "source_kind", "target_fps")},
@@ -125,11 +128,31 @@ def summary(run_id: str) -> dict:
         "frames_processed": processed,
         "frames_dropped": cfg.get("frames_dropped", 0),
         "frames_accounted_pct": round(100 * processed / offered, 1) if offered else 0.0,
-        # The blob store is shared across runs (snippets carry no run linkage), so this is
-        # the store's total — exact for a single-run demo database, an upper bound otherwise.
+        # THIS run's crops only. Thumbnails are stored but not linked to a run, and the
+        # store is shared across runs, so its total would overstate a short run.
         "bytes_stored": int(stored), "raw_bytes": cfg.get("raw_bytes_offered"),
         "segments_scored": scored, "segment_coverage_km": round(float(seg_cov) / 1000, 2),
     }
+
+
+def _run_crop_bytes(run_id: str) -> int:
+    """Bytes of the distinct crops this run's detections point at, measured on disk:
+    `snippets.bytes` is a 0 placeholder the writer cannot fill (repository.py, I2)."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT sn.sha256 FROM inferences i
+            JOIN detections d ON d.inference_id = i.inference_id
+            JOIN snippets sn ON sn.snippet_id = d.snippet_id
+            WHERE i.run_id = %s""", (run_id,))
+        shas = [r[0] for r in cur.fetchall()]
+    store = BlobStore(root=SETTINGS.blob_root)
+    total = 0
+    for sha in shas:
+        try:
+            total += store.path_for(sha, kind="crop", fmt=CROP_FMT).stat().st_size
+        except OSError:
+            pass
+    return total
 
 
 @app.get("/api/runs/{run_id}/segments.geojson")
@@ -375,6 +398,71 @@ def control(run_id: str, body: Control) -> dict:
     # Expires so a crashed feed-sim can't leave a stale "pause" for a reused run id.
     redis.from_url(SETTINGS.redis_url).set(control_key(run_id), value, ex=6 * 3600)
     return {"run_id": run_id, "requested": body.action, "feed_state": _feed_state(run_id)}
+
+
+class StartRun(BaseModel):
+    fps: float = 8.0
+    max_frames: int | None = None          # None = the whole test split
+    route_mode: Literal["random", "loop"] = "random"
+    route_seed: int | None = None          # None = a new random route
+
+
+#: The run the dashboard started, if any: one at a time, so two feeds never share a bus.
+_RUNNER: dict = {}
+
+
+def _runner_alive() -> bool:
+    proc = _RUNNER.get("proc")
+    return proc is not None and proc.poll() is None
+
+
+@app.post("/api/runs/start")
+def start_run(body: StartRun) -> dict:
+    """Start a new survey run: edgecv.runner (feed-sim → drain → segmenter → bench) as its
+    own process. Refuses while another run is feeding — from here or from `make e2e`."""
+    if not 1 <= body.fps <= 30:
+        raise HTTPException(422, "fps must be between 1 and 30")
+    if body.max_frames is not None and body.max_frames < 10:
+        raise HTTPException(422, "max_frames must be at least 10")
+    if _runner_alive():
+        raise HTTPException(409, f"run {_RUNNER['run_id']} is still going")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT run_id::text FROM survey_runs WHERE ended_at IS NULL "
+                    "AND started_at > now() - interval '6 hours'")
+        open_runs = [r[0] for r in cur.fetchall()]
+    feeding = [r for r in open_runs if _feed_state(r) in ("running", "paused")]
+    if feeding:
+        raise HTTPException(409, f"run {feeding[0]} is still feeding — pause or cancel it first")
+    run_id = str(uuid.uuid4())
+    cmd = [sys.executable, "-m", "edgecv.runner", "--run-id", run_id, "--fps", str(body.fps),
+           "--route-mode", body.route_mode]
+    if body.route_seed is not None:
+        cmd += ["--route-seed", str(body.route_seed)]
+    if body.max_frames:
+        cmd += ["--max-frames", str(body.max_frames)]
+    log = Path(tempfile.gettempdir()) / f"runner-{run_id}.log"
+    # Own session, so an API worker reload doesn't take the run down with it. (A container
+    # restart still does — the run is then left open and can be cancelled.)
+    proc = subprocess.Popen(cmd, stdout=log.open("w"), stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    _RUNNER.update(proc=proc, run_id=run_id, log=log, started=time.time(), request=body.model_dump())
+    return {"run_id": run_id, "pid": proc.pid, "request": body.model_dump()}
+
+
+@app.get("/api/runner")
+def runner_status() -> dict:
+    """The dashboard-started run: alive, exit code, and the last lines of its log (the
+    drain/segment/bench steps after the feed ends are only visible here)."""
+    if not _RUNNER:
+        return {"run_id": None, "alive": False}
+    tail = ""
+    try:
+        tail = "".join(_RUNNER["log"].read_text().splitlines(keepends=True)[-12:])
+    except OSError:
+        pass
+    return {"run_id": _RUNNER["run_id"], "alive": _runner_alive(),
+            "exit_code": _RUNNER["proc"].poll(), "request": _RUNNER["request"],
+            "elapsed_s": round(time.time() - _RUNNER["started"]), "log_tail": tail}
 
 
 @app.get("/api/runs/{run_id}/position")

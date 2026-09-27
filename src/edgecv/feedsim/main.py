@@ -105,7 +105,8 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
              n_frames: int, fps: float, prevalence: float, maxlen: int,
              seed: int, stream: str, transport: str = "reference",
              track: SyntheticTrack | RouteTrack | None = None,
-             order: str = "sample", control=None) -> FeedStats:
+             order: str = "sample", control=None,
+             max_frames: int | None = None) -> FeedStats:
     """`order="sample"` draws with replacement at the given prevalence (benchmark runs).
     `order="all"` replays every manifest image exactly once in a seeded shuffle, ignoring
     `n_frames` and `prevalence` — the "run the whole dataset" mode.
@@ -121,6 +122,10 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
     if order == "all":
         paths = clean + defect
         random.Random(seed).shuffle(paths)
+        # A short demo run takes the first N of the shuffle — a random sample of the
+        # split, not its first N files, which would all be one country.
+        if max_frames:
+            paths = paths[:max_frames]
         n_frames = len(paths)
         next_path = iter(paths).__next__
     else:
@@ -199,6 +204,8 @@ def main() -> None:
                     help="random = a new randomised drive over the council streets each "
                          "run, sized to the frame count; loop = the fixed main-road loop; "
                          "cover = every street, with jumps")
+    ap.add_argument("--max-frames", type=int, default=None,
+                    help="with --order all: replay only the first N of the shuffle")
     ap.add_argument("--route-seed", type=int, default=None,
                     help="fix the random route (default: a new one every run)")
     ap.add_argument("--source-kind", choices=["synthetic", "dataset-replay", "drive"],
@@ -223,6 +230,8 @@ def main() -> None:
     elif args.route:
         clean, defect = load_pools(args.manifest)
         n_planned = len(clean) + len(defect) if args.order == "all" else args.frames
+        if args.order == "all" and args.max_frames:
+            n_planned = min(n_planned, args.max_frames)
         route_seed = (args.route_seed if args.route_seed is not None
                       else random.SystemRandom().randrange(1_000_000))
         track = RouteTrack.from_network(args.route, mode=args.route_mode,
@@ -265,7 +274,8 @@ def main() -> None:
                          prevalence=args.prevalence, maxlen=settings.frames_maxlen,
                          seed=args.seed, stream=settings.frames_stream,
                          transport=args.transport, track=track, order=args.order,
-                         control=redis_control(client, run_id))
+                         control=redis_control(client, run_id),
+                         max_frames=args.max_frames)
 
         config: dict = {"frames_offered": stats.offered,
                         "frames_dropped": stats.dropped,

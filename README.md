@@ -42,7 +42,10 @@ The fixed alternative is a closed 4.7 km main-road loop
 (`roads.DEMO_LOOP`), 72 % on council roads, crossing state arterials (drawn grey, "not
 ours", never scored) only where the council network has no way round. `--route-mode cover`
 restores the old drive over every street. Grey dashed legs are where the car drove but
-nothing was scored (state roads, turns). **❚❚ Pause / ■ Cancel** sit next to the LIVE badge
+nothing was scored (state roads, turns). **＋ New run** in the top bar starts a run from the dashboard (whole split, 1,000 or 300
+images; 4/8/12 fps; random route or the fixed loop; optional seed) — `POST
+/api/runs/start`, which launches `edgecv.runner` (the in-container equivalent of `make
+e2e`) and refuses while another run is feeding. **❚❚ Pause / ■ Cancel** sit next to the LIVE badge
 (`POST /api/runs/{id}/control` with `pause`, `resume` or `cancel`).
 
 Your existing `make up` stack already on 5432/6379? Run the demo beside it:

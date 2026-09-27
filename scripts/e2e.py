@@ -22,12 +22,8 @@ import uuid
 import psycopg
 import redis
 
-from edgecv.bus.observe import group_health
 from edgecv.config import Settings
-
-ROUTE = "src/edgecv/roads/sydney_demo.geojson"
-MANIFEST = "data/rdd2022/manifest.json"
-GT = "data/rdd2022/ground_truth.json"
+from edgecv.runner import GT, feed_args, wait_for_drain
 
 
 def compose(*args: str) -> None:
@@ -36,39 +32,22 @@ def compose(*args: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def wait_for_drain(conn, client, run_id: str, *, timeout_s: float) -> None:
-    with conn.cursor() as cur:
-        cur.execute("SELECT config FROM survey_runs WHERE run_id = %s", (run_id,))
-        cfg = cur.fetchone()[0]
-    expected = cfg["frames_offered"] - cfg["frames_dropped"]
-    deadline = time.monotonic() + timeout_s
-    while True:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM frames WHERE run_id = %s", (run_id,))
-            (landed,) = cur.fetchone()
-        health = group_health(client, stream_name="frames", group="workers")
-        print(f"  landed {landed}/{expected} · bus lag {health.lag} · pending {health.pending}",
-              flush=True)
-        if landed >= expected and health.pending == 0:
-            return
-        if time.monotonic() > deadline:
-            raise SystemExit(f"timed out with {landed}/{expected} frames landed")
-        time.sleep(5)
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--speed-mps", type=float, default=13.89)
     ap.add_argument("--timeout-s", type=float, default=900)
+    ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random")
+    ap.add_argument("--route-seed", type=int, default=None)
+    ap.add_argument("--max-frames", type=int, default=None)
     args = ap.parse_args()
 
     settings = Settings.from_env()
     run_id = str(uuid.uuid4())
     t0 = time.monotonic()
-    compose("feedsim", "python", "-m", "edgecv.feedsim.main", "--manifest", MANIFEST,
-            "--order", "all", "--route", ROUTE, "--source-kind", "dataset-replay",
-            "--fps", str(args.fps), "--speed-mps", str(args.speed_mps), "--run-id", run_id)
+    compose("feedsim", "python", "-m", "edgecv.feedsim.main", *feed_args(
+        run_id=run_id, fps=args.fps, speed_mps=args.speed_mps, route_mode=args.route_mode,
+        route_seed=args.route_seed, max_frames=args.max_frames))
     print(f"feed finished in {time.monotonic() - t0:.0f} s; waiting for the pipeline to drain",
           flush=True)
     with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:

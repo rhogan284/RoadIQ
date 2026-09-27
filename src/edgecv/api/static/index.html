@@ -19,6 +19,8 @@
       <select id="run-select" aria-label="Survey run"></select>
     </label>
     <button id="live" class="live" hidden title="Show frames as they land"></button>
+    <button id="new-run" class="ctl primary-ctl" hidden title="Start a new survey run">＋ New run</button>
+    <span id="runner-note" class="runner-note" hidden></span>
     <span id="run-ctl" class="run-ctl" hidden>
       <button id="ctl-pause" class="ctl" title="Hold the vehicle where it is">❚❚ Pause</button>
       <button id="ctl-cancel" class="ctl danger" title="Stop this run; keep what was sent">■ Cancel</button>
@@ -85,6 +87,37 @@
       </details>
     </section>
   </main>
+
+  <dialog id="new-run-dlg" class="dlg">
+    <form method="dialog" id="new-run-form">
+      <h3>New survey run</h3>
+      <p class="muted">Replays RDD2022 test images along a road route, through every component,
+        then segments and scores the run.</p>
+      <label>Images
+        <select name="max_frames">
+          <option value="">Whole test split (5,758 · ~12 min at 8 fps)</option>
+          <option value="1000">1,000 random images (~2 min)</option>
+          <option value="300">300 random images (~40 s)</option>
+        </select></label>
+      <label>Frame rate
+        <select name="fps">
+          <option value="8" selected>8 fps (workers keep up)</option>
+          <option value="4">4 fps</option>
+          <option value="12">12 fps (expect drops — the bounded bus at work)</option>
+        </select></label>
+      <label>Route
+        <select name="route_mode">
+          <option value="random" selected>Random, side streets included</option>
+          <option value="loop">Fixed main-road loop</option>
+        </select></label>
+      <label>Route seed <input name="route_seed" type="number" min="0" placeholder="blank = new random route"></label>
+      <p id="new-run-err" class="err-text"></p>
+      <menu>
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
+        <button value="start" class="btn primary" id="new-run-go">Start run</button>
+      </menu>
+    </form>
+  </dialog>
 
   <section id="log" class="log" hidden aria-label="Frame log">
     <header class="log-head">
