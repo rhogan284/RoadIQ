@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from edgecv.bench.collect import run_coverage
 from edgecv.blobstore.store import BlobStore
+from edgecv.bus.observe import consumer_health, group_health, stuck_entries
 from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.feedsim.main import control_key, state_key
@@ -476,6 +477,40 @@ def runner_status() -> dict:
             "request": json.loads(st.get("request") or "{}"),
             "elapsed_s": round(time.time() - float(st.get("started") or time.time())),
             "log_tail": "\n".join(client.lrange(RUNNER_LOG, -12, -1))}
+
+
+#: Above a healthy frame's processing time, so a stuck entry is a worker that died
+#: holding work rather than one that is merely busy.
+STUCK_MS = 30_000
+
+
+@app.get("/api/bus")
+def bus_health(stuck_ms: int = STUCK_MS) -> dict:
+    """What is still in flight on the frames bus — the half Postgres cannot show, since it
+    only holds what already landed. Not per run: the bus is shared by every run.
+
+    Never a 5xx when Redis is down or the group does not exist yet: the panel says
+    "not readable" and the rest of the page, which reads Postgres, carries on."""
+    stream = SETTINGS.frames_stream
+    try:
+        client = redis.from_url(SETTINGS.redis_url, decode_responses=False)
+        g = group_health(client, stream_name=stream, group="workers")
+        consumers = consumer_health(client, stream_name=stream, group="workers")
+        stuck = stuck_entries(client, stream_name=stream, group="workers",
+                              min_idle_ms=max(0, stuck_ms), count=10)
+    except (redis.RedisError, LookupError) as exc:
+        return {"readable": False, "error": str(exc), "stream": stream, "group": "workers"}
+    return {"readable": True, "stream": g.stream, "group": g.group,
+            "stream_length": g.stream_length, "consumers": g.consumers,
+            "pending": g.pending,
+            # null, never 0: nil lag means Redis cannot compute the backlog, which is a
+            # different thing from being caught up (bus/observe.py).
+            "lag": g.lag,
+            "consumer_rows": [{"name": c.name, "pending": c.pending, "idle_ms": c.idle_ms}
+                              for c in consumers],
+            "stuck_ms": max(0, stuck_ms),
+            "stuck": [{"entry_id": s.entry_id, "consumer": s.consumer, "idle_ms": s.idle_ms,
+                       "deliveries": s.delivery_count} for s in stuck]}
 
 
 @app.get("/api/runs/{run_id}/position")

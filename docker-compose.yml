@@ -103,18 +103,12 @@ services:
     command: python -m edgecv.runner --serve
     restart: unless-stopped
 
-  # Component 7 (read API) + component 8 (the product dashboard, served at /).
+  # Component 7 (read API) + component 8 (the product dashboard, served at /) +
+  # component 12 (pipeline observability: the dashboard's bus-health panel).
   api:
     <<: *app
     command: uvicorn edgecv.api.main:app --host 0.0.0.0 --port 8000
     ports: ["8000:8000"]
-
-  # Component 12 — pipeline observability (coverage + bus health). No longer the
-  # product dashboard; that is the api service's page on :8000.
-  dashboard:
-    <<: *app
-    command: streamlit run src/edgecv/dashboard/app.py --server.port 8501 --server.address 0.0.0.0
-    ports: ["8501:8501"]
 
 volumes:
   blobs:

@@ -386,6 +386,37 @@ async function renderBench() {
     `<tr><td><b>All</b></td><td><b>${Number(b.precision).toFixed(3)}</b></td><td><b>${Number(b.recall).toFixed(3)}</b></td><td><b>${Number(b.f1).toFixed(3)}</b></td><td></td></tr></table>`;
 }
 
+// ------------------------------------------------------------------ bus health
+// The bus is shared by every run, so this does not depend on S.run.
+const fmtIdle = (ms) => ms >= 60000 ? `${(ms / 60000).toFixed(1)} min` : `${(ms / 1000).toFixed(1)} s`;
+
+async function renderBus() {
+  const b = await api("/bus").catch((e) => ({ readable: false, error: e.message }));
+  const nums = { "b-len": b.stream_length, "b-lag": b.lag, "b-pend": b.pending, "b-cons": b.consumers };
+  if (!b.readable) {
+    for (const id of Object.keys(nums)) $(id).textContent = "–";
+    $("bus-note").textContent = `bus not readable: ${b.error}`;
+    $("bus-stuck").hidden = true;
+    $("bus-tables").innerHTML = "";
+    return;
+  }
+  for (const [id, v] of Object.entries(nums)) $(id).textContent = v == null ? "–" : v.toLocaleString();
+  // "unknown", never 0: null lag means Redis cannot compute the backlog.
+  if (b.lag == null) $("b-lag").textContent = "unknown";
+  $("bus-note").textContent = `${b.stream} stream · ${b.group} group`;
+  const warn = $("bus-stuck");
+  warn.hidden = !b.stuck.length;
+  warn.textContent = `${b.stuck.length} entr${b.stuck.length === 1 ? "y" : "ies"} idle over ` +
+    `${b.stuck_ms / 1000} s — a worker may have died holding work. XAUTOCLAIM should reclaim these.`;
+  const cons = b.consumer_rows.length ? `<table><tr><th>Consumer</th><th>Pending</th><th>Idle</th></tr>` +
+    b.consumer_rows.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.pending}</td><td>${fmtIdle(c.idle_ms)}</td></tr>`).join("") +
+    `</table>` : "";
+  const stuck = b.stuck.length ? `<table><tr><th>Stuck entry</th><th>Consumer</th><th>Idle</th><th>Deliveries</th></tr>` +
+    b.stuck.map((s) => `<tr><td>${esc(s.entry_id)}</td><td>${esc(s.consumer)}</td><td>${fmtIdle(s.idle_ms)}</td><td>${s.deliveries}</td></tr>`).join("") +
+    `</table>` : "";
+  $("bus-tables").innerHTML = cons + stuck;
+}
+
 // ------------------------------------------------------------------ export
 function exportCsv(ev) {
   ev.preventDefault();
@@ -532,6 +563,7 @@ async function tick() {
     }
     renderLive(runs.find((r) => r.run_id === S.run));
     renderRunner();
+    renderBus();
   } catch (e) {
     console.warn("live refresh failed", e);
   } finally {
@@ -652,6 +684,7 @@ async function boot() {
     $("log-pause").textContent = LOG.paused ? "Resume" : "Pause";
     if (!LOG.paused) logPoll();
   };
+  renderBus();
   const first = runs[0];
   if (!first) { $("ev-caption").textContent = "No survey runs yet — press ＋ New run."; return; }
   sel.value = first.run_id;

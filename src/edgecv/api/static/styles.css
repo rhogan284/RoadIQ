@@ -138,6 +138,18 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
   font-weight: 700; }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn.done { border-color: var(--accent); color: var(--accent); }
+.bus-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 0 16px 12px; }
+.bus-stats div { display: flex; flex-direction: column; }
+.bus-stats b { font-size: 20px; }
+.bus-stats span { color: var(--muted); font-size: 12.5px; }
+.bus-warn { margin: 0 16px 10px; padding: 7px 10px; font-size: 13px;
+  background: #fbf1df; border-left: 4px solid var(--amber-dk); }
+.bus-warn[hidden] { display: none; }
+.bus-tables { display: flex; flex-wrap: wrap; gap: 8px 28px; padding: 0 16px 12px; font-size: 13px; }
+.bus-tables table { border-collapse: collapse; }
+.bus-tables th { text-align: left; font-size: 11px; letter-spacing: .12em; color: var(--faint);
+  text-transform: uppercase; padding: 2px 14px 2px 0; border-bottom: 1px solid var(--rule); }
+.bus-tables td { padding: 3px 14px 3px 0; white-space: nowrap; }
 .bench { margin: 14px 16px 0; font-size: 13px; }
 .bench summary { cursor: pointer; color: var(--accent); }
 .bench table { border-collapse: collapse; margin-top: 6px; }
@@ -150,6 +162,6 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
   .chrome-meta { display: none; }
 }
 @media (max-width: 600px) {
-  .stats { grid-template-columns: 1fr 1fr; }
+  .stats, .bus-stats { grid-template-columns: 1fr 1fr; }
   .meta { grid-template-columns: max-content 1fr; }
 }
