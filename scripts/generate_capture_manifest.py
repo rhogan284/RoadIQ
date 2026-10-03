@@ -9,7 +9,9 @@ from edgecv.feedsim.route import RouteTrack
 
 VIDEO_PATH = "data/road_footage.mp4"
 GEOJSON_PATH = Path("src/edgecv/roads/sydney_demo.geojson")
-OUTPUT_MANIFEST = "data/capture_manifest.json"
+
+# Save directly to the target location feedsim uses
+OUTPUT_MANIFEST = Path("data/rdd2022/manifest.json")
 FRAMES_DIR = Path("data/frames")
 
 
@@ -19,17 +21,15 @@ def generate_manifest():
         print(f"Error: Could not open video at {VIDEO_PATH}")
         return
 
-    # Ensure output directory for extracted frame images exists
     FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Opened video: {fps:.2f} FPS, {total_frames} total frames.")
 
-    # Speed in metres per second (40 km/h = 11.11 m/s)
     speed_mps = 40.0 / 3.6
 
-    # Instantiate RouteTrack using its valid 'from_network' class method
     track = RouteTrack.from_network(
         path=GEOJSON_PATH,
         mode="random",
@@ -38,7 +38,6 @@ def generate_manifest():
         fps=fps,
     )
 
-    # Contract 5 mandatory identifiers
     run_id = str(uuid.uuid4())
     device_boot_id = str(uuid.uuid4())
     start_time = datetime.now(timezone.utc)
@@ -53,28 +52,31 @@ def generate_manifest():
         if not ret:
             break
 
-        # Save actual image frame to disk
-        frame_path = FRAMES_DIR / f"frame_{seq:04d}.jpg"
-        cv2.imwrite(str(frame_path), frame)
+        frame_filename = f"frame_{seq:04d}.jpg"
+        frame_path = FRAMES_DIR / frame_filename
 
-        # Calculate time offsets
+        # Encode JPEG once to guarantee file on disk and hash match exactly
+        success, buffer = cv2.imencode(".jpg", frame)
+        if not success:
+            seq += 1
+            continue
+
+        jpeg_bytes = buffer.tobytes()
+        frame_path.write_bytes(jpeg_bytes)
+        sha256_hash = hashlib.sha256(jpeg_bytes).hexdigest()
+
         seconds_elapsed = seq / fps
         frame_time = start_time + timedelta(seconds=seconds_elapsed)
         mono_ns = int(seconds_elapsed * 1e9)
 
-        # Hash JPEG frame buffer for data integrity
-        _, buffer = cv2.imencode(".jpg", frame)
-        sha256_hash = hashlib.sha256(buffer).hexdigest()
-
-        # Get GPS Fix using RouteTrack's native fix_for method
         fix = track.fix_for(seq)
 
-        # Contract 5 JSON item shape + mandatory "path" key for feedsim
         record = {
-            "path": str(frame_path).replace("\\", "/"),
+            # Use POSIX path relative to repository root
+            "path": f"data/frames/{frame_filename}",
             "run_id": run_id,
             "seq": seq,
-            "captured_at": frame_time.isoformat(),
+            "captured_at": frame_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "capture_mono_ns": mono_ns,
             "device_boot_id": device_boot_id,
             "sha256": sha256_hash,
@@ -95,9 +97,7 @@ def generate_manifest():
     with open(OUTPUT_MANIFEST, "w") as f:
         json.dump(manifest_data, f, indent=2)
 
-    print(
-        f"Done! Generated {len(manifest_records)} entries in {OUTPUT_MANIFEST}"
-    )
+    print(f"Done! Generated {len(manifest_records)} entries in {OUTPUT_MANIFEST}")
 
 
 if __name__ == "__main__":
