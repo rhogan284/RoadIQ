@@ -14,15 +14,13 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
 
 .chrome { display: flex; align-items: center; gap: 18px; height: 48px; padding: 0 18px;
   background: var(--chrome); color: #fff; }
-.dots i { display: inline-block; width: 11px; height: 11px; margin-right: 8px;
-  border-radius: 50%; background: #4a5560; }
 .brand { font-size: 16px; }
-.urlbar { display: flex; align-items: center; gap: 8px; background: #232a31;
-  border-radius: 6px; padding: 5px 12px; min-width: 460px; color: #9fb2bf; font-size: 13px; }
-.urlbar .muted { color: #9fb2bf; }
-.urlbar select { background: transparent; color: #cfe0ea; border: 0; font: inherit;
-  max-width: 330px; }
-.urlbar select option { color: var(--ink); }
+/* Run picker: a plain label + dropdown (replaces the mock-up's fake browser bar). */
+.run-pick { display: flex; align-items: center; gap: 8px; background: #232a31;
+  border-radius: 6px; padding: 5px 12px; color: #9fb2bf; font-size: 13px; }
+.run-pick select { background: transparent; color: #cfe0ea; border: 0; font: inherit;
+  max-width: 360px; }
+.run-pick select option { color: var(--ink); }
 .live { background: transparent; border: 1px solid #5a2f28; border-radius: 4px;
   padding: 3px 9px; cursor: pointer; font-family: inherit;
   color: #ff8a73; font-size: 13px; font-weight: 700; letter-spacing: .06em;
@@ -143,11 +141,84 @@ html, body { margin: 0; background: var(--body); color: var(--ink);
 .bench table { border-collapse: collapse; margin-top: 6px; }
 .bench td, .bench th { padding: 2px 10px 2px 0; text-align: left; }
 
+/* ---------------------------------------------------------------- uplift: layout + polish
+   Kept ABOVE the @media blocks so the small-screen one-column layout still wins there. */
+.grid { grid-template-columns: minmax(0, 62fr) minmax(0, 38fr); }   /* more room for the map */
+#map { height: calc(100vh - 300px); min-height: 420px; }           /* map fills the window */
+.live { white-space: nowrap; }                                     /* badge on one line */
+.card, .btn, .chip, .stat { border-radius: 6px; }                  /* consistent corners */
+#btn-reject:not(:disabled) { border-color: var(--poor); color: var(--poor); }
+.btn:disabled { opacity: 1; background: #eef1f4; color: #9aa4ae; border-color: var(--rule); }
+
+/* ---------------------------------------------------------------- uplift: tabs */
+.tabs { display: flex; border-bottom: 1px solid var(--rule); padding: 0 8px; }
+.tab { background: none; border: 0; border-bottom: 3px solid transparent; padding: 12px 14px;
+  font: inherit; font-weight: 700; color: var(--muted); cursor: pointer; }
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tab .count { background: var(--amber-dk); color: #fff; border-radius: 9px; padding: 0 6px;
+  font-size: 11px; margin-left: 4px; }
+.tab-page[hidden] { display: none; }
+.pad { margin: 12px 16px; font-size: 13px; }
+.queue-list { list-style: none; margin: 0 16px; padding: 0; max-height: 640px; overflow: auto; }
+.queue-list li { display: flex; justify-content: space-between; gap: 10px; padding: 9px 8px;
+  border-bottom: 1px solid var(--surface); }
+.queue-list li[data-key] { cursor: pointer; }
+.queue-list li[data-key]:hover { background: #f7f9fb; }
+.queue-list li.sel { background: var(--surface); box-shadow: inset 4px 0 0 var(--accent); }
+#health { margin-top: 12px; border-top: 0; }
+
+/* ---------------------------------------------------------------- uplift: reclassify */
+.reclass { display: inline-flex; }
+.reclass select { font: inherit; padding: 0 8px; border: 1px solid var(--rule); border-right: 0;
+  border-radius: 6px 0 0 6px; background: var(--white); color: var(--ink); }
+.reclass select:disabled { color: #9aa4ae; background: #eef1f4; }
+.reclass .btn { border-radius: 0 6px 6px 0; }
+
+
+/* ---------------------------------------------------------------- uplift: empty + stalled states */
+.live.stalled { color: var(--amber); border-color: #5b4a24; animation: none; }
+.frame-wrap { background: var(--surface); }
+.frame-wrap.empty .hud { display: none; }
+.worklist tr.empty td { padding: 14px 6px; color: var(--muted); white-space: normal; cursor: default; }
+.worklist tr.empty:hover { background: none; }
+.chip.good { background: var(--good); color: #fff; }
+.chip.fair { background: var(--fair); color: #fff; }
+.chip.poor { background: var(--poor); color: #fff; }
+
+/* ---------------------------------------------------------------- uplift: map */
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; margin: 0 9px 0 2px; }
+.fit-btn { width: 34px; height: 34px; background: #fff; border: 2px solid rgba(0,0,0,.2);
+  border-radius: 4px; font-size: 18px; line-height: 1; cursor: pointer; color: var(--ink); }
+.fit-btn:hover { background: #f4f4f4; }
+
+/* ---------------------------------------------------------------- uplift: notifications */
+.bell { position: relative; font-size: 15px; }
+#bell-count { position: absolute; top: -7px; right: -7px; background: var(--poor); color: #fff;
+  border-radius: 9px; font-size: 11px; font-weight: 700; padding: 0 5px; }
+#bell-count[hidden] { display: none; }
+.notes { position: fixed; top: 52px; right: 16px; width: 360px; max-height: 65vh; overflow: auto;
+  background: #fff; color: var(--ink); border: 1px solid var(--rule); border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.2); z-index: 3000; }
+.notes[hidden] { display: none; }
+.notes header { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+.notes ul { list-style: none; margin: 0; padding: 0; }
+.notes li { padding: 9px 12px; border-bottom: 1px solid var(--surface); font-size: 13px;
+  border-left: 4px solid var(--accent); }
+.notes li.muted { border-left-color: transparent; }
+.notes li.warn { border-left-color: var(--amber); }
+.notes li.error { border-left-color: var(--poor); }
+.notes li.clickable { cursor: pointer; }
+.notes li.clickable:hover { background: #f7f9fb; }
+.notes time { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
+
 @media (max-width: 1100px) {
   .grid { grid-template-columns: 1fr; }
   .evidence { position: static; }
-  .urlbar { min-width: 0; }
   .chrome-meta { display: none; }
+  .bell { margin-left: auto; }
 }
 @media (max-width: 600px) {
   .stats { grid-template-columns: 1fr 1fr; }

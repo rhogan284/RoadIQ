@@ -12,10 +12,9 @@
        chrome bar · stat chips · network map · work list | evidence card. Every number on
        this page comes from the read API (component 7); nothing is hard-coded. -->
   <header class="chrome">
-    <span class="dots"><i></i><i></i><i></i></span>
     <strong class="brand">RoadIQ</strong>
-    <label class="urlbar">
-      <span class="muted">roadiq.local/network · run</span>
+    <label class="run-pick">
+      <span>Survey run</span>
       <select id="run-select" aria-label="Survey run"></select>
     </label>
     <button id="live" class="live" hidden title="Show frames as they land"></button>
@@ -26,7 +25,14 @@
       <button id="ctl-cancel" class="ctl danger" title="Stop this run; keep what was sent">■ Cancel</button>
     </span>
     <span id="chrome-meta" class="chrome-meta"></span>
+    <button id="bell" class="ctl bell" title="Notifications" aria-label="Notifications">🔔<span id="bell-count" hidden></span></button>
   </header>
+
+  <!-- Notifications: new defects, condition changes and problems, newest first. -->
+  <section id="notes" class="notes" hidden aria-label="Notifications">
+    <header><b>Notifications</b><button id="notes-clear" class="btn small">Clear</button></header>
+    <ul id="notes-list"><li class="muted">Nothing yet.</li></ul>
+  </section>
 
   <main class="grid">
     <section class="left">
@@ -59,32 +65,62 @@
     </section>
 
     <section class="card evidence">
-      <div class="card-head">
-        <h2 id="ev-title">Select a defect</h2>
-        <span id="ev-state" class="chip muted-chip">—</span>
+      <!-- Tabs: one job per page instead of everything stacked in one card. -->
+      <nav class="tabs" aria-label="Panel">
+        <button class="tab active" data-tab="evidence">Evidence</button>
+        <button class="tab" data-tab="queue">Review queue <span id="queue-count" class="count">0</span></button>
+        <button class="tab" data-tab="health">Run health</button>
+      </nav>
+
+      <!-- Tab 1: Evidence -->
+      <div class="tab-page" data-page="evidence">
+        <div class="card-head">
+          <h2 id="ev-title">Select a defect</h2>
+          <span id="ev-state" class="chip muted-chip">—</span>
+        </div>
+        <div class="queue-bar">
+          <span id="queue-label" class="muted">Review queue</span>
+          <span>
+            <button class="btn small" id="q-prev" aria-label="Previous in queue">‹</button>
+            <button class="btn small" id="q-next" aria-label="Next in queue">›</button>
+          </span>
+        </div>
+        <div class="frame-wrap empty" id="frame-wrap">
+          <canvas id="frame" width="960" height="640"></canvas>
+          <div class="hud"><span id="hud-l"></span><span id="hud-r"></span></div>
+        </div>
+        <p class="muted caption" id="ev-caption">Click a segment, a defect dot, or a work-list row.</p>
+        <dl class="meta" id="ev-meta"></dl>
+        <div class="actions">
+          <button class="btn primary" id="btn-confirm" disabled>Confirm defect</button>
+          <button class="btn" id="btn-reject" disabled>Reject</button>
+          <span class="reclass">
+            <select id="reclass-class" disabled aria-label="Correct defect type">
+              <option value="D00">D00 Longitudinal crack</option>
+              <option value="D10">D10 Transverse crack</option>
+              <option value="D20">D20 Alligator crack</option>
+              <option value="D40">D40 Pothole</option>
+            </select>
+            <button class="btn" id="btn-reclass" disabled>Reclassify</button>
+          </span>
+          <button class="btn" id="btn-order" disabled>Add to work order</button>
+        </div>
       </div>
-      <div class="queue-bar">
-        <span id="queue-label" class="muted">Review queue</span>
-        <span>
-          <button class="btn small" id="q-prev" aria-label="Previous in queue">‹</button>
-          <button class="btn small" id="q-next" aria-label="Next in queue">›</button>
-        </span>
+
+      <!-- Tab 2: Review queue -->
+      <div class="tab-page" data-page="queue" hidden>
+        <p class="muted pad">Defects the detector wasn't sure about, most confident first. Click one to review it.</p>
+        <ul id="queue-list" class="queue-list"></ul>
       </div>
-      <div class="frame-wrap">
-        <canvas id="frame" width="960" height="640"></canvas>
-        <div class="hud"><span id="hud-l"></span><span id="hud-r"></span></div>
+
+      <!-- Tab 3: Run health -->
+      <div class="tab-page" data-page="health" hidden>
+        <dl class="meta" id="health"></dl>
+        <details class="bench" id="bench-box" open>
+          <summary>Detector benchmark for this run</summary>
+          <div id="bench"></div>
+        </details>
       </div>
-      <p class="muted caption" id="ev-caption">Click a segment, a defect dot, or a work-list row.</p>
-      <dl class="meta" id="ev-meta"></dl>
-      <div class="actions">
-        <button class="btn primary" id="btn-confirm" disabled>Confirm defect</button>
-        <button class="btn" id="btn-reject" disabled>Reject</button>
-        <button class="btn" id="btn-order" disabled>Add to work order</button>
-      </div>
-      <details class="bench" id="bench-box">
-        <summary>Detector benchmark for this run</summary>
-        <div id="bench"></div>
-      </details>
     </section>
   </main>
 

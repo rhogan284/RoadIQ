@@ -4,7 +4,7 @@
 const CLASS_NAME = { D00: "Longitudinal", D10: "Transverse", D20: "Alligator",
                      D40: "Pothole", other: "Other" };
 const BAND_COLOUR = { good: "#3f7f62", fair: "#c08a2e", poor: "#a83e2c" };
-const UNSURVEYED = "#c6cdd4";
+const UNSURVEYED = "#9aa5b1";          // darker than before so unsurveyed roads are visible
 const ACCEPTED = new Set(["auto-accepted", "confirmed", "reclassified"]);
 
 const S = { run: null, summary: null, geo: null, worklist: [], instances: [], queue: [],
@@ -48,6 +48,25 @@ legend.onAdd = () => {
   return d;
 };
 legend.addTo(map);
+
+// "Zoom to council roads" button under the +/− controls, and the same fit on load.
+const fitCtl = L.control({ position: "topleft" });
+fitCtl.onAdd = () => {
+  const b = L.DomUtil.create("button", "fit-btn");
+  b.type = "button"; b.textContent = "⤢";
+  b.title = "Zoom to council roads"; b.setAttribute("aria-label", b.title);
+  L.DomEvent.disableClickPropagation(b);
+  b.onclick = fitNetwork;
+  return b;
+};
+fitCtl.addTo(map);
+function fitNetwork() {
+  if (!segLayer) return;
+  map.invalidateSize();                         // the map box may have changed size
+  const b = segLayer.getBounds();
+  if (b.isValid()) map.fitBounds(b, { padding: [20, 20], maxZoom: 17, animate: false });
+}
+window.addEventListener("resize", () => map.invalidateSize());
 
 // State arterials: driven, never scored. Drawn once, under everything else.
 const ARTERIAL = "#b9c2cb";
@@ -148,7 +167,9 @@ function renderLegend() {
     row(UNSURVEYED, `Not surveyed&nbsp; ${km.none.toFixed(1)} km`) +
     row(ARTERIAL, "Not ours (state road)") +
     `<div><i style="background:repeating-linear-gradient(90deg,#0d6d92 0 2px,transparent 2px 7px)"></i>Planned route ahead</div>` +
-    `<div><i style="background:repeating-linear-gradient(90deg,${OFF_COUNCIL} 0 5px,transparent 5px 9px)"></i>Driven, not surveyed</div>`;
+    `<div><i style="background:repeating-linear-gradient(90deg,${OFF_COUNCIL} 0 5px,transparent 5px 9px)"></i>Driven, not surveyed</div>` +
+    `<div><i class="dot" style="background:#d9a03a"></i>Defect awaiting review</div>` +
+    `<div><i class="dot" style="background:#8e2f20"></i>Defect accepted</div>`;
 }
 
 function renderMap(fit) {
@@ -157,15 +178,11 @@ function renderMap(fit) {
     style: (f) => {
       const c = BAND_COLOUR[f.properties.condition_band];
       return c ? { color: c, weight: 6, opacity: 0.95 }
-               : { color: UNSURVEYED, weight: 4, opacity: 0.45, dashArray: "6 6" };
+               : { color: UNSURVEYED, weight: 4, opacity: 0.8, dashArray: "6 6" };
     },
     onEachFeature: (f, layer) => layer.on("click", () => selectSegment(f.properties.segment_id)),
   }).addTo(map);
-  if (fit) {
-    map.invalidateSize();
-    const b = segLayer.getBounds();
-    if (b.isValid()) map.fitBounds(b, { padding: [8, 8], animate: false });
-  }
+  if (fit) fitNetwork();
 
   dotLayer.clearLayers();
   for (const inst of S.instances) {
@@ -200,16 +217,20 @@ function renderStats() {
                                         : "assessed this survey";
   $("s-def").textContent = s.defects.toLocaleString();
   $("s-def-l").textContent = `defects on the register · ${s.pending_review} to review`;
-  $("s-acc").textContent = `${s.frames_accounted_pct}%`;
-  $("s-acc-l").textContent = `frames accounted for · ` +
-    (s.frames_in_flight ? `${s.frames_in_flight.toLocaleString()} in flight · ` : "") +
-    `${s.frames_dropped.toLocaleString()} dropped`;
+  // No frames yet: "–" and a hint, not a "0%" that reads like a failure.
+  if (!s.frames_offered) {
+    $("s-acc").textContent = "–";
+    $("s-acc-l").textContent = "frames accounted for · waiting for the first frame";
+  } else {
+    $("s-acc").textContent = `${s.frames_accounted_pct}%`;
+    $("s-acc-l").textContent = `frames accounted for · ` +
+      (s.frames_in_flight ? `${s.frames_in_flight.toLocaleString()} in flight · ` : "") +
+      `${s.frames_dropped.toLocaleString()} dropped`;
+  }
   $("s-mb").textContent = fmtBytes(s.bytes_stored);
-  $("s-mb-l").textContent = `crops uploaded, of ${fmtBytes(s.raw_bytes)} captured`;
-  const r = s.run;
-  $("chrome-meta").textContent =
-    `Survey ${fmtDate(r.started_at, { day: "numeric", month: "short", year: "numeric" })}` +
-    `  ·  ${r.authority_id}  ·  ${r.source_kind}  ·  self-hosted`;
+  $("s-mb-l").textContent = s.raw_bytes ? `crops uploaded, of ${fmtBytes(s.raw_bytes)} captured`
+                                        : "crops uploaded";
+  $("chrome-meta").textContent = s.run.authority_id;
 }
 
 function renderWorklist() {
@@ -217,6 +238,11 @@ function renderWorklist() {
   $("map-note").textContent = prev
     ? `worst-first · compared with ${fmtDate(prev.previous_at, { month: "long", year: "numeric" })}`
     : "worst-first · first survey of this network";
+  if (!S.worklist.length) {
+    $("worklist").innerHTML = `<tr class="empty"><td colspan="6">No roads scored yet. ` +
+      `Roads appear here, worst first, once the run has been scored.</td></tr>`;
+    return;
+  }
   $("worklist").innerHTML = S.worklist.map((w, i) => {
     const c = w.change;
     const change = c == null ? `<span class="same">first survey</span>`
@@ -229,7 +255,7 @@ function renderWorklist() {
       <td>${w.defects}</td><td>${change}</td>
       <td class="muted">${w.previous_at ? fmtDate(w.previous_at, { month: "short", year: "numeric" }) : "—"}</td></tr>`;
   }).join("");
-  for (const tr of $("worklist").querySelectorAll("tr")) {
+  for (const tr of $("worklist").querySelectorAll("tr[data-seg]")) {
     tr.addEventListener("click", () => selectSegment(Number(tr.dataset.seg)));
   }
 }
@@ -242,6 +268,7 @@ function selectSegment(segmentId) {
                                        && i.defect_class !== "other");
   on.sort((a, b) => (ACCEPTED.has(b.state) - ACCEPTED.has(a.state)) || b.confidence - a.confidence);
   if (on.length) showInstance(on[0].cluster_key);
+  else showSegment(segmentId);                     // no defects: show the road itself
 }
 
 // ------------------------------------------------------------------ evidence
@@ -281,7 +308,65 @@ function drawPlaceholder(msg) {
   ctx.fillStyle = "#c5d2da"; ctx.font = "18px Helvetica, Arial"; ctx.fillText(msg, 24, 40);
 }
 
+// Light placeholder instead of a big dark box when there's no photo to show.
+function drawEmpty(msg) {
+  $("frame-wrap").classList.add("empty");
+  canvas.width = 960; canvas.height = 400;
+  ctx.fillStyle = "#e9eef4"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#5b6674"; ctx.font = "20px Helvetica, Arial"; ctx.textAlign = "center";
+  ctx.fillText(msg, canvas.width / 2, canvas.height / 2);
+  ctx.textAlign = "start";
+}
+
+function setReviewEnabled(on) {
+  for (const id of ["btn-confirm", "btn-reject", "btn-order", "btn-reclass", "reclass-class"]) $(id).disabled = !on;
+  if (!on) {
+    $("btn-confirm").textContent = "Confirm defect"; $("btn-reject").textContent = "Reject";
+    $("btn-reclass").textContent = "Reclassify"; $("btn-order").textContent = "Add to work order";
+    $("btn-order").classList.remove("done");
+  }
+}
+
+// Back to the starting state: nothing selected.
+function resetEvidence() {
+  S.current = null;
+  $("ev-title").textContent = "Select a defect";
+  $("ev-state").textContent = "—"; $("ev-state").className = "chip muted-chip";
+  $("ev-meta").innerHTML = "";
+  $("ev-caption").textContent = "Click a road, a defect dot, or a work-list row.";
+  drawEmpty("Nothing selected yet");
+  setReviewEnabled(false);
+}
+
+// A road with no open defects: show what we know about the road instead.
+function showSegment(segmentId) {
+  const f = S.geo.features.find((x) => x.properties.segment_id === segmentId);
+  if (!f) return;
+  showTab("evidence");
+  S.current = null;
+  const p = f.properties, band = p.condition_band;
+  $("ev-title").textContent = `${segRef(p.road_ref)} · ${p.road_name || "Unnamed road"}`;
+  $("ev-state").textContent = band || "not surveyed";
+  $("ev-state").className = "chip " + (BAND_COLOUR[band] ? band : "muted-chip");
+  drawEmpty(band ? "No open defects on this road" : "Not surveyed in this run");
+  $("ev-caption").textContent = band ? "Road summary. Defect dots on the map open their photos."
+                                     : "Drive this road in a run to score it.";
+  const counts = p.counts ? Object.entries(p.counts).filter(([k, v]) => k !== "pending" && v)
+    .map(([k, v]) => `${v} × ${k} ${CLASS_NAME[k] ?? ""}`.trim()).join(", ") : "";
+  const meta = [
+    ["Condition", p.condition_index == null ? "not scored" : `${Math.round(p.condition_index)}/100 · ${band}`],
+    ["Length", `${p.length_m} m`],
+    ["Covered", p.coverage_m == null ? "—" : `${Math.round(p.coverage_m)} m`],
+    ["Frames", p.frames_assessed == null ? "—" : `${p.frames_assessed} assessed`],
+    ["Defects", counts || "none recorded"],
+  ];
+  $("ev-meta").innerHTML = meta.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
+  setReviewEnabled(false);
+  renderQueue();
+}
+
 async function showInstance(key) {
+  showTab("evidence");                              // any defect click lands on Evidence
   const inst = await api(`/instances/${S.run}/${key}`);
   S.current = inst;
   if (inst.segment_id && inst.segment_id !== S.segment) {
@@ -297,6 +382,7 @@ async function showInstance(key) {
     : inst.state === "rejected" ? "rejected" : "accepted");
 
   const img = new Image();
+  $("frame-wrap").classList.remove("empty");
   img.onload = () => {
     const scale = Math.min(960 / img.width, 720 / img.height);
     canvas.width = Math.round(img.width * scale);
@@ -342,19 +428,37 @@ async function showInstance(key) {
     ["Ground truth", `${inst.ground_truth_boxes} labelled box${inst.ground_truth_boxes === 1 ? "" : "es"} on this image`],
   ];
   $("ev-meta").innerHTML = meta.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
-  for (const id of ["btn-confirm", "btn-reject", "btn-order"]) $(id).disabled = false;
+  for (const id of ["btn-confirm", "btn-reject", "btn-order", "btn-reclass", "reclass-class"]) $(id).disabled = false;
   $("btn-confirm").textContent = inst.state === "confirmed" ? "Confirmed ✓" : "Confirm defect";
   $("btn-reject").textContent = inst.state === "rejected" ? "Rejected ✓" : "Reject";
+  // Reclassify: preselect the type the defect currently has (the corrected one, if any).
+  const currentClass = inst.state === "reclassified" && inst.new_class ? inst.new_class : inst.defect_class;
+  $("reclass-class").value = CLASS_NAME[currentClass] && currentClass !== "other" ? currentClass : "D00";
+  $("btn-reclass").textContent = inst.state === "reclassified" ? "Reclassified ✓" : "Reclassify";
   $("btn-order").textContent = S.order.has(key) ? "On work order ✓" : "Add to work order";
   $("btn-order").classList.toggle("done", S.order.has(key));
+  renderQueue();                                    // highlight this defect in the queue list
 }
 
-async function review(state) {
+// Send a review decision. The API re-scores the whole run before replying, so this can
+// take a moment: lock the buttons, say what's happening, and report a failure plainly.
+async function review(state, newClass = null) {
+  if (!S.current) return;
   const key = S.current.cluster_key;
-  await api(`/instances/${S.run}/${key}/review`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ state, reviewed_by: "officer" }),
-  });
+  const btns = ["btn-confirm", "btn-reject", "btn-reclass", "reclass-class"];
+  for (const id of btns) $(id).disabled = true;            // stop double-clicks
+  $("ev-caption").textContent = "Saving decision and re-scoring the road…";
+  try {
+    await api(`/instances/${S.run}/${key}/review`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state, new_class: newClass, reviewed_by: "officer" }),
+    });
+  } catch (e) {
+    $("ev-caption").textContent = `Couldn't save the decision (${e.message}). Try again.`;
+    notify("error", `A review didn't save: ${e.message}`);
+    for (const id of btns) $(id).disabled = false;
+    return;
+  }
   const pos = S.queue.findIndex((q) => q.cluster_key === key);
   await refresh(false);
   // Keep the officer moving through the queue after a decision.
@@ -369,11 +473,46 @@ function step(delta) {
   showInstance(S.queue[i].cluster_key);
 }
 
+// ------------------------------------------------------------------ tabs
+function showTab(name) {
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
+  for (const p of document.querySelectorAll(".tab-page")) p.hidden = p.dataset.page !== name;
+}
+
+function renderQueue() {
+  $("queue-count").textContent = S.queue.length;
+  const cur = S.current && S.current.cluster_key;
+  $("queue-list").innerHTML = S.queue.length
+    ? S.queue.map((q) => `
+      <li data-key="${esc(q.cluster_key)}" class="${q.cluster_key === cur ? "sel" : ""}">
+        <span><b>${esc(label(q))}</b><br><span class="muted">${esc(q.road_name || "unlocated road")}</span></span>
+        <span class="muted">${q.confidence.toFixed(2)}</span>
+      </li>`).join("")
+    : `<li class="muted">Nothing waiting for review.</li>`;
+  for (const li of $("queue-list").querySelectorAll("li[data-key]")) {
+    li.onclick = () => showInstance(li.dataset.key);
+  }
+}
+
+function renderHealth() {
+  const s = S.summary;
+  const n = (v) => (v == null ? "–" : v.toLocaleString());
+  const rows = [
+    ["Frames offered", n(s.frames_offered)],   ["Landed", n(s.frames_ingested)],
+    ["Processed", n(s.frames_processed)],      ["In flight", n(s.frames_in_flight)],
+    ["Dropped", n(s.frames_dropped)],
+    ["Accounted for", s.frames_offered ? `${s.frames_accounted_pct}%` : "–"],
+    ["Road assessed", `${s.assessed_km} km`],  ["Not assessed", `${s.gap_m} m`],
+    ["Segments scored", n(s.segments_scored)], ["Crops uploaded", fmtBytes(s.bytes_stored)],
+  ];
+  $("health").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+
 // ------------------------------------------------------------------ bench
 async function renderBench() {
   const b = await api(`/runs/${S.run}/bench`).catch(() => null);
   S.benched = !!b;
-  if (!b) { $("bench").innerHTML = `<p class="muted">No benchmark row yet — run <code>make evaluate</code>.</p>`; return; }
+  if (!b) { $("bench").innerHTML = `<p class="muted">Benchmark results appear here after the run finishes and is scored.</p>`; return; }
   const g = b.grid_point || {};
   const det = (g.detectors || []).map((d) => `${d.name} ${d.version}`).join(", ");
   const pc = Object.entries(g.per_class || {}).map(([c, m]) =>
@@ -409,15 +548,19 @@ async function refresh(fit) {
   const [summary, geo, worklist, instances] = await Promise.all([
     api(`/runs/${S.run}/summary`), api(`/runs/${S.run}/segments.geojson`),
     api(`/runs/${S.run}/worklist?limit=25`), api(`/runs/${S.run}/instances?limit=50000`)]);
+  const sameRun = S.dataRun === S.run, prevGeo = S.geo, prevInst = S.instances;
   Object.assign(S, { summary, geo, worklist, instances });
+  if (sameRun && prevGeo) checkChanges(prevGeo, prevInst);
+  S.dataRun = S.run;
   S.queue = instances.filter((i) => i.state === "pending" && i.defect_class !== "other");
-  renderStats(); renderMap(fit); renderWorklist();
+  renderStats(); renderMap(fit); renderWorklist(); renderQueue(); renderHealth();
   if (S.segment) highlightSegment(S.segment);
 }
 
 async function loadRun(runId) {
   Object.assign(S, { run: runId, current: null, segment: null, benched: false });
   S.order.clear();
+  resetEvidence();
   await refresh(true);
   renderBench();
   await loadPlan();
@@ -425,6 +568,60 @@ async function loadRun(runId) {
   renderTrack();
   logReset();
   if (S.worklist.length) selectSegment(S.worklist[0].segment_id);
+}
+
+// ------------------------------------------------------------------ notifications
+// The dashboard compares each refresh with the previous one and announces what changed.
+// They live only while the page is open (the API has no event history yet).
+const NOTES = { list: [], unread: 0, apiDown: false, lastExit: null };
+const BAND_RANK = { poor: 1, fair: 2, good: 3 };
+
+function notify(level, text, onClick) {
+  NOTES.list.unshift({ level, text, onClick, at: new Date() });
+  NOTES.list = NOTES.list.slice(0, 50);                     // keep the newest 50
+  if ($("notes").hidden) NOTES.unread++;
+  renderNotes();
+}
+
+function renderNotes() {
+  $("bell-count").hidden = NOTES.unread === 0;
+  $("bell-count").textContent = NOTES.unread;
+  const ul = $("notes-list");
+  if (!NOTES.list.length) { ul.innerHTML = `<li class="muted">Nothing yet.</li>`; return; }
+  ul.innerHTML = NOTES.list.map((n, i) =>
+    `<li data-i="${i}" class="${n.level}${n.onClick ? " clickable" : ""}">${esc(n.text)}
+       <time>${n.at.toLocaleTimeString("en-AU")}</time></li>`).join("");
+  for (const li of ul.querySelectorAll("li.clickable")) {
+    li.onclick = () => { $("notes").hidden = true; NOTES.list[li.dataset.i].onClick(); };
+  }
+}
+
+function checkChanges(prevGeo, prevInst) {
+  // New defects: cluster keys we haven't seen before (summarised if many arrive at once).
+  const seen = new Set(prevInst.map((i) => i.cluster_key));
+  const fresh = S.instances.filter((i) => !seen.has(i.cluster_key) && i.defect_class !== "other");
+  if (fresh.length > 3) {
+    notify("info", `${fresh.length} new defects detected`);
+  } else {
+    for (const i of fresh) {
+      notify(i.state === "pending" ? "warn" : "info",
+        `New defect: ${label(i)} on ${i.road_name || "an unlocated road"} (${i.confidence.toFixed(2)})` +
+        (i.state === "pending" ? " — needs review" : ""),
+        () => showInstance(i.cluster_key));
+    }
+  }
+  // Condition changes: a road moved between good / fair / poor.
+  const before = new Map(prevGeo.features.map((f) => [f.properties.segment_id, f.properties.condition_band]));
+  let firstScored = 0;
+  for (const f of S.geo.features) {
+    const p = f.properties, was = before.get(p.segment_id), now = p.condition_band;
+    if (!BAND_RANK[now] || was === now) continue;
+    if (!BAND_RANK[was]) { firstScored++; continue; }
+    notify(BAND_RANK[now] < BAND_RANK[was] ? "warn" : "info",
+      `${segRef(p.road_ref)} ${p.road_name || ""}: ${was} → ${now}`,
+      () => selectSegment(p.segment_id));
+  }
+  if (firstScored) notify("info", `${firstScored} road${firstScored > 1 ? "s" : ""} scored for the first time`);
 }
 
 // ------------------------------------------------------------------ live mode
@@ -444,12 +641,32 @@ function renderRunOptions(runs) {
   sel.value = keep || (runs[0] && runs[0].run_id);
 }
 
+// A "live" run that hasn't landed a new frame for STALL_MS is stalled: the feed died or was
+// never started. Flag it, and let the officer cancel it and start a new run.
+const STALL_MS = 3 * 60 * 1000;
+function checkStall(run) {
+  const was = S.stalled;
+  if (!run || run.ended_at) { S.stalled = false; return; }
+  const n = S.summary.frames_ingested;
+  if (S.stallRun !== run.run_id || n !== S.lastFrames) {
+    S.stallRun = run.run_id; S.lastFrames = n; S.lastProgressAt = Date.now();
+  }
+  const quiet = Date.now() - S.lastProgressAt;
+  const age = Date.now() - Date.parse(run.started_at);
+  S.stalled = S.feedState !== "paused" && ((n === 0 && age > STALL_MS) || quiet > STALL_MS);
+  if (S.stalled && !was) notify("warn", "This run has stalled: no new frames for over 3 minutes. Cancel it to start a new run.");
+}
+
 function renderLive(run) {
   const live = run && !run.ended_at;
   S.live = !!live;
+  checkStall(run);
   const badge = $("live");
   badge.hidden = !live;
-  if (live) {
+  badge.classList.toggle("stalled", !!S.stalled);
+  if (live && S.stalled) {
+    badge.textContent = `⚠ Stalled · ${S.summary.frames_ingested.toLocaleString()} frames`;
+  } else if (live) {
     const paused = S.feedState === "paused";
     badge.textContent = `${paused ? "❚❚ PAUSED" : "● LIVE"} · ${S.summary.frames_ingested.toLocaleString()} frames landed`;
     badge.classList.toggle("paused", paused);
@@ -489,8 +706,12 @@ async function runControl(action) {
 // "Scoring…" after the feed ends while the runner drains, segments and benchmarks.
 async function renderRunner() {
   const r = await api("/runner").catch(() => null);
+  if (r && r.exit_code && r.exit_code !== "0" && r.exit_code !== NOTES.lastExit) {
+    notify("error", `The runner stopped with an error (exit ${r.exit_code}). Open the frame log to see why.`);
+    NOTES.lastExit = r.exit_code;
+  }
   const note = $("runner-note");
-  const feeding = S.live && !["cancelled", "done"].includes(S.feedState);
+  const feeding = S.live && !S.stalled && !["cancelled", "done"].includes(S.feedState);
   let text = "";
   if (r && r.alive) {
     if (r.run_id !== S.run) text = "Starting run…";
@@ -519,6 +740,7 @@ async function tick() {
   S.busy = true;
   try {
     const runs = await api("/runs");
+    if (NOTES.apiDown) { NOTES.apiDown = false; notify("info", "Connection to the system restored"); }
     renderRunOptions(runs);
     const newest = runs[0];
     if (newest && S.follow && newest.run_id !== S.run) {
@@ -526,7 +748,7 @@ async function tick() {
       await loadRun(newest.run_id);
     } else if (S.run) {
       await refresh(false);
-      if (!S.current && S.worklist.length) selectSegment(S.worklist[0].segment_id);
+      if (!S.current && S.segment == null && S.worklist.length) selectSegment(S.worklist[0].segment_id);
       if (!S.benched) renderBench();
       if (S.live) renderTrack();
     }
@@ -534,6 +756,8 @@ async function tick() {
     renderRunner();
   } catch (e) {
     console.warn("live refresh failed", e);
+    if (!NOTES.apiDown) notify("error", `Lost connection to the system (${e.message})`);
+    NOTES.apiDown = true;
   } finally {
     S.busy = false;
   }
@@ -610,6 +834,7 @@ async function logPoll() {
 async function boot() {
   $("btn-confirm").onclick = () => review("confirmed");
   $("btn-reject").onclick = () => review("rejected");
+  $("btn-reclass").onclick = () => review("reclassified", $("reclass-class").value);
   $("btn-order").onclick = () => {
     const i = S.current; if (!i) return;
     S.order.has(i.cluster_key) ? S.order.delete(i.cluster_key) : S.order.set(i.cluster_key, i);
@@ -618,6 +843,10 @@ async function boot() {
   $("q-prev").onclick = () => step(-1);
   $("q-next").onclick = () => step(1);
   $("export").onclick = exportCsv;
+  for (const b of document.querySelectorAll(".tab")) b.onclick = () => showTab(b.dataset.tab);
+  $("bell").onclick = () => { $("notes").hidden = !$("notes").hidden; NOTES.unread = 0; renderNotes(); };
+  $("notes-clear").onclick = () => { NOTES.list = []; NOTES.unread = 0; renderNotes(); };
+  resetEvidence();
   const runs = await api("/runs");
   const sel = $("run-select");
   renderRunOptions(runs);
