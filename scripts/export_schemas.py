@@ -8,9 +8,9 @@ older draft. See docs/CONTRACTS.md for the mismatches that check turned up
 against an earlier version of this file.
 
 Contracts 3-6 are PROVISIONAL: their shape is derived from the real schema
-(src/edgecv/db/migrations/001_initial.sql) and the one read query that exists
-today (src/edgecv/dashboard/app.py), but the named owner has not signed off
-on the semantics yet. Each carries "x-status" and "x-owner" so the status
+(src/edgecv/db/migrations/001_initial.sql) and, for contract 3, from what the
+read API (src/edgecv/api/main.py) returns, but the named owner has not signed
+off on the semantics yet. Each carries "x-status" and "x-owner" so the status
 travels with the file, not just with docs/CONTRACTS.md.
 """
 from __future__ import annotations
@@ -168,52 +168,111 @@ INFERENCE_RESULT = {
 }
 
 # ---------------------------------------------------------------------------
-# CONTRACT 3 — Read API (Joseph). Shape derived from the one read query that
-# exists today (src/edgecv/dashboard/app.py::run_options/coverage_series),
-# which is exactly the query the read API is meant to replace behind an HTTP
-# boundary (see the dashboard module docstring).
+# CONTRACT 3 — Read API (Joseph). Shapes taken from what src/edgecv/api/main.py
+# actually returns, and what its only consumer (api/static/app.js) and the e2e
+# tests read. The full endpoint list is in docs/CONTRACTS.md §3.
 # ---------------------------------------------------------------------------
 READ_API = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "ReadAPI",
-    "description": "CONTRACT 3 — DB -> Joseph's read API. PROVISIONAL.",
+    "description": "CONTRACT 3 — DB + bus -> the read API (src/edgecv/api/main.py) -> "
+                   "the dashboard. Implemented; PROVISIONAL until Joseph signs off.",
     "x-status": "PROVISIONAL",
     "x-owner": "Joseph",
     "type": "object",
     "properties": {
-        "run_summary": {
+        "run": {
             "type": "object",
-            "description": "One row of survey_runs, shaped as run_options() "
-                            "in dashboard/app.py already reads it.",
-            "required": ["run_id", "authority_id", "started_at", "target_fps"],
+            "description": "One element of GET /api/runs, newest first. ended_at null "
+                           "means the run is live.",
+            "required": ["run_id", "authority_id", "started_at", "ended_at",
+                         "source_kind", "target_fps", "instances"],
             "properties": {
                 "run_id": {"type": "string", "format": "uuid"},
                 "authority_id": {"type": "string"},
                 "started_at": {"type": "string", "format": "date-time"},
+                "ended_at": {"type": ["string", "null"], "format": "date-time"},
+                "source_kind": {"type": "string"},
                 "target_fps": {"type": "number"},
+                "instances": {"type": "integer", "minimum": 0},
             },
         },
-        "coverage_point": {
+        "run_summary": {
             "type": "object",
-            "description": "One row of the run_coverage_1min view, shaped as "
-                            "coverage_series() in dashboard/app.py already reads it.",
-            "required": ["bucket", "frames_ingested", "frames_processed",
-                         "frames_flagged", "frames_without_fix"],
+            "description": "GET /api/runs/{run_id}/summary — the stat chips. While the "
+                           "run is live, frames_offered/frames_dropped come from "
+                           "feed-sim's counters on the bus, not survey_runs.config.",
+            "required": ["run", "assessed_km", "gap_m", "defects", "pending_review",
+                         "frames_offered", "frames_ingested", "frames_processed",
+                         "frames_dropped", "frames_in_flight", "frames_accounted_pct",
+                         "bytes_stored", "raw_bytes", "segments_scored",
+                         "segment_coverage_km"],
             "properties": {
-                "bucket": {"type": "string", "format": "date-time"},
+                "run": {"type": "object",
+                        "description": "The run row without `instances`."},
+                "assessed_km": {"type": "number", "minimum": 0},
+                "gap_m": {"type": "number", "minimum": 0,
+                          "description": "Dropped frames, as metres of road not assessed."},
+                "defects": {"type": "integer", "minimum": 0,
+                            "description": "defect_instances not rejected on review."},
+                "pending_review": {"type": "integer", "minimum": 0},
+                "frames_offered": {"type": "integer", "minimum": 0},
                 "frames_ingested": {"type": "integer", "minimum": 0},
                 "frames_processed": {"type": "integer", "minimum": 0},
-                "frames_flagged": {"type": "integer", "minimum": 0},
-                "frames_without_fix": {"type": "integer", "minimum": 0},
+                "frames_dropped": {"type": "integer", "minimum": 0},
+                "frames_in_flight": {"type": "integer", "minimum": 0},
+                "frames_accounted_pct": {"type": "number", "minimum": 0, "maximum": 100,
+                                         "description": "(ingested + dropped) / offered."},
+                "bytes_stored": {"type": "integer", "minimum": 0,
+                                 "description": "This run's crops, measured on disk."},
+                "raw_bytes": {"type": ["integer", "null"], "minimum": 0},
+                "segments_scored": {"type": "integer", "minimum": 0},
+                "segment_coverage_km": {"type": "number", "minimum": 0},
             },
         },
+        "bus_health": {
+            "type": "object",
+            "description": "GET /api/bus?stuck_ms=30000 — the frames stream and the "
+                           "workers group, for all runs. Always 200: readable=false "
+                           "(with error) when Redis or the group is not there.",
+            "required": ["readable", "stream", "group"],
+            "properties": {
+                "readable": {"type": "boolean"},
+                "error": {"type": "string"},
+                "stream": {"type": "string"},
+                "group": {"type": "string"},
+                "stream_length": {"type": "integer", "minimum": 0},
+                "consumers": {"type": "integer", "minimum": 0},
+                "pending": {"type": "integer", "minimum": 0,
+                            "description": "Delivered, not yet XACKed."},
+                "lag": {"type": ["integer", "null"], "minimum": 0,
+                        "description": "Not yet delivered. null = Redis cannot compute "
+                                       "it; show 'unknown', never 0."},
+                "consumer_rows": {"type": "array", "items": {
+                    "type": "object", "required": ["name", "pending", "idle_ms"],
+                    "properties": {"name": {"type": "string"},
+                                   "pending": {"type": "integer", "minimum": 0},
+                                   "idle_ms": {"type": "integer", "minimum": 0}}}},
+                "stuck_ms": {"type": "integer", "minimum": 0},
+                "stuck": {"type": "array", "maxItems": 10, "items": {
+                    "type": "object",
+                    "required": ["entry_id", "consumer", "idle_ms", "deliveries"],
+                    "properties": {"entry_id": {"type": "string"},
+                                   "consumer": {"type": "string"},
+                                   "idle_ms": {"type": "integer", "minimum": 0},
+                                   "deliveries": {"type": "integer", "minimum": 1}}}},
+            },
+            "if": {"properties": {"readable": {"const": True}}},
+            "then": {"required": ["stream_length", "consumers", "pending", "lag",
+                                  "consumer_rows", "stuck_ms", "stuck"]},
+            "else": {"required": ["error"]},
+        },
     },
-    "x-notes": "Only the two shapes the dashboard already queries are shaped "
-               "here. The map, worst-N segments and review-queue endpoints "
-               "(dashboard/app.py's stated Week 9 replacement scope) still "
-               "need Joseph's design before they can be frozen; segments and "
-               "instance_reviews table shapes exist in 001_initial.sql for "
-               "when that happens.",
+    "x-notes": "Only the three shapes the dashboard's header, stat chips and bus "
+               "panel read are shaped here. Segments GeoJSON is contract 6; the "
+               "bench row is contract 4. The worklist, instance, position, track, "
+               "log and control endpoints are listed in docs/CONTRACTS.md §3 and "
+               "pinned by tests/e2e, not by a schema.",
 }
 
 # ---------------------------------------------------------------------------
@@ -268,8 +327,8 @@ BENCH_RUN = {
 CAPTURE_MANIFEST = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "CaptureManifest",
-    "description": "CONTRACT 5 — Dexter's device -> Ryan's ingest path. PROVISIONAL.",
-    "x-status": "PROVISIONAL",
+    "description": "CONTRACT 5 — Dexter's device -> Ryan's ingest path. FROZEN.",
+    "x-status": "FROZEN 2026-09-11",
     "x-owner": "Dexter",
     "type": "object",
     "required": ["run_id", "seq", "captured_at", "capture_mono_ns",

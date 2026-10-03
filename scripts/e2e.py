@@ -57,7 +57,7 @@ def main() -> None:
     compose("bench", "python", "-m", "edgecv.bench.evaluate", "--load-gt", GT,
             "--run-id", run_id)
     print(f"\nE2E complete in {time.monotonic() - t0:.0f} s · run {run_id}\n"
-          f"Dashboard: http://localhost:8000   Pipeline panel: http://localhost:8501")
+          f"Dashboard: http://localhost:8000")
 
 
 if __name__ == "__main__":

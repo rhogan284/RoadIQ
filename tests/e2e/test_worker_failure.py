@@ -51,7 +51,8 @@ def _register(repo: Repository, run_id: str, manifest) -> None:
                     target_fps=1000, prevalence=None, transport="reference")
 
 
-def test_no_frames_lost_when_a_worker_dies(rds, clean_db, rdd_subset, detector, tmp_path):
+def test_no_frames_lost_when_a_worker_dies(rds, clean_db, rdd_subset, detector, tmp_path,
+                                           api):
     manifest = rdd_subset(15, 15)
     n_frames = 30
     repo = Repository(clean_db)
@@ -82,6 +83,11 @@ def test_no_frames_lost_when_a_worker_dies(rds, clean_db, rdd_subset, detector, 
                           count=100)
     assert {s.consumer for s in stuck} == {"doomed"}
     assert len(stuck) == read_before_death
+    # ... and the dashboard's bus panel reports the same, through the read API.
+    bus = api.get("/api/bus", params={"stuck_ms": 0}).json()
+    assert bus["readable"]
+    assert (bus["pending"], bus["lag"]) == (read_before_death, n_frames - read_before_death)
+    assert {s["consumer"] for s in bus["stuck"]} == {"doomed"}
 
     # --- survivor drains the rest, then reclaims the dead worker's frames ---
     survivor = FrameConsumer(rds, stream="frames", group="workers",

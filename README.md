@@ -39,9 +39,8 @@ and prefix host-side commands with
 
 ### Run it
 
-    make stack                     # redis, postgres, writer, 2 workers, segmenter, runner, api, dashboard
-    open http://localhost:8000     # product dashboard (components 7 + 8)
-    open http://localhost:8501     # pipeline observability: coverage + bus health (component 12)
+    make stack                     # redis, postgres, writer, 2 workers, segmenter, runner, api
+    open http://localhost:8000     # the dashboard (components 7, 8 and 12)
 
 Then either press **＋ New run** on the dashboard, or from a terminal:
 
@@ -64,6 +63,7 @@ into `bench_runs`. The whole split takes ~12 min at 8 fps on an M-series Mac.
 | Work list | worst-first segments, change against the authority's previous run, CSV export as a work order |
 | Evidence panel | the frame the vehicle saw with every box on it (solid = accepted, dashed amber = review), HUD, metadata, **Confirm / Reject / Add to work order**; review queue ‹ › |
 | Benchmark | per-class precision / recall / F1 and latency for the run |
+| Bus health | the frames stream as it is now, for all runs: length, **lag** (`unknown`, never 0, when Redis can't compute it), **pending**, consumers with their idle time, and a warning listing entries idle over 30 s (a worker died holding work) |
 | **● LIVE** | click for the frame log: one line per frame in landing order (`#log` deep link) |
 | **❚❚ Pause / ▶ Resume / ■ Cancel** | control a live run; cancel keeps what was sent and still scores it |
 | **＋ New run** | whole split, 1,000 or 300 images · 4 / 8 / 12 fps · random route or the fixed loop · optional seed (`#new` deep link) |
@@ -95,9 +95,8 @@ before the first frame.
 |---|---|---|
 | `worker` | 3 + 4 | runs Shervin's YOLOv12s (`detectors/yolo12s.py`), picked by `detectors/registry.py` |
 | `segmenter` | 11 | always-on: snap, cluster into `defect_instances`, score `segment_condition` (recompute-and-replace per run) |
-| `api` | 7 + 8 | FastAPI read layer; serves the dashboard at `/` |
+| `api` | 7 + 8 + 12 | FastAPI read layer; serves the dashboard at `/`, including its bus-health panel |
 | `runner` | harness | runs **＋ New run** requests from a Redis queue (feed-sim → drain → segmenter → bench), in its own container so an API redeploy can't kill a run |
-| `dashboard` | 12 | the Streamlit coverage + bus-health panel, unchanged |
 
 ### Read API
 
@@ -109,6 +108,7 @@ before the first frame.
 | `GET /api/runs/{id}/position`, `/route`, `/track`, `/log`; `GET /api/network` | vehicle, planned route, driven legs, frame log, state roads |
 | `POST /api/runs/start`, `GET /api/runner` | start a run (409 while another is feeding), runner status |
 | `POST /api/runs/{id}/control` | `pause` / `resume` / `cancel` |
+| `GET /api/bus?stuck_ms=30000` | bus health: stream length, lag (null = unknown), pending, consumers, stuck entries |
 
 ### Knobs
 
@@ -160,7 +160,7 @@ test harness standing in for both the device and the run-registration step, not 
 statement that the real device will write to Postgres directly.
 
 Services: `feedsim` (1) · `redis` (2, the bus) · `worker` ×2 (3 + 4) · `writer` (5) ·
-blob store volume (6) · `api` (7 + 8) · `bench` (9) · `segmenter` (11) · `dashboard` (12),
+blob store volume (6) · `api` (7 + 8 + 12) · `bench` (9) · `segmenter` (11),
 plus `postgres` and the demo's `runner`. Component 10 (capture) is Dexter's phone rig and
 is replaced here by feed-sim replaying the dataset along a route.
 
@@ -192,8 +192,8 @@ keeps them apart:
 
 ## Bus health — lag, pending, and stuck work
 
-`edgecv.bus.observe` reads what Redis exposes about the consumer group, and the
-dashboard shows it. Three numbers that get confused constantly:
+`edgecv.bus.observe` reads what Redis exposes about the consumer group, `GET /api/bus`
+serves it, and the dashboard's **Bus health** card shows it (refreshed every 5 s). Three numbers that get confused constantly:
 
 | | meaning |
 |---|---|

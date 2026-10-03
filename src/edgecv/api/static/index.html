@@ -56,6 +56,23 @@
           <tbody id="worklist"></tbody>
         </table></div>
       </div>
+
+      <!-- What is still in flight on the bus. Shared by every run, so it does not follow
+           the run menu. -->
+      <div class="card bus-card">
+        <div class="card-head">
+          <h2>Bus health</h2>
+          <span class="muted" id="bus-note">frames stream · workers group</span>
+        </div>
+        <div class="bus-stats">
+          <div><b id="b-len">–</b><span>stream length</span></div>
+          <div><b id="b-lag">–</b><span>lag · not yet delivered</span></div>
+          <div><b id="b-pend">–</b><span>pending · in flight</span></div>
+          <div><b id="b-cons">–</b><span>consumers</span></div>
+        </div>
+        <p id="bus-stuck" class="bus-warn" hidden></p>
+        <div id="bus-tables" class="bus-tables"></div>
+      </div>
     </section>
 
     <section class="card evidence">

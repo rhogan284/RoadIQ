@@ -7,7 +7,7 @@ integration weekend.
 |---|---|---|---|---|
 | 1 | Frame envelope | Ryan -> Shervin | Ryan | FROZEN 2026-08-19 |
 | 2 | Detector plugin interface | Ryan <-> Shervin | Ryan | FROZEN 2026-08-19 |
-| 3 | Read API | DB -> Joseph | Joseph | PROVISIONAL — shape below, awaiting Joseph |
+| 3 | Read API | DB + bus -> dashboard | Joseph | PROVISIONAL — implemented (`api/main.py`), awaiting Joseph's sign-off |
 | 4 | bench_runs + grid config | Ilana <-> all | Ilana | PROVISIONAL — table exists, grid axes open |
 | 5 | Capture manifest | Dexter -> Ryan | Dexter | PROVISIONAL — requirements below |
 | 6 | Segments GeoJSON + condition index | Ryan -> Dexter, Joseph | Ryan (shape) / Ilana (index) | PROVISIONAL |
@@ -202,46 +202,71 @@ against the schema with `jsonschema`, not by inspection alone.
 
 ## 3. Read API
 
-**PROVISIONAL — owner Joseph.** No HTTP layer exists yet. The shape below is the one read query that
-does exist today —
-[`dashboard/app.py`](../src/edgecv/dashboard/app.py)`::run_options` / `::coverage_series`, deliberately
-written free of Streamlit so it's already unit-testable — and is exactly what the read API is meant to
-replace behind an HTTP boundary per that module's own docstring ("replaced in Week 9 by the map,
-worst-N segments and review queue behind the read API").
+**PROVISIONAL — owner Joseph. Implemented** in [`api/main.py`](../src/edgecv/api/main.py)
+(FastAPI, `uvicorn edgecv.api.main:app`, port 8000). Its one consumer is the dashboard it serves
+at `/` ([`api/static/app.js`](../src/edgecv/api/static/app.js)); the browser talks to nothing else,
+so frames and crops are served from here too. Exported schema:
+[`read_api.schema.json`](../src/edgecv/contracts/schemas/read_api.schema.json) — the run row, the
+run summary and bus health.
+
+| Endpoint | Returns | Read by |
+|---|---|---|
+| `GET /api/health` | `{"ok": true}` once Postgres answers | compose / demos |
+| `GET /api/runs` | run rows, newest first (`ended_at` null = live) | run menu, live follow |
+| `GET /api/runs/{id}/summary` | `run_summary` — the stat chips | stat chips, LIVE badge |
+| `GET /api/runs/{id}/segments.geojson` | contract 6 FeatureCollection, unsurveyed segments included | map |
+| `GET /api/runs/{id}/worklist?limit=25` | worst-first segments + change against the authority's previous run | work list |
+| `GET /api/runs/{id}/instances?state=&segment_id=` | defect instances with their effective review state | map dots, review queue |
+| `GET /api/instances/{run}/{cluster_key}` | one instance, its best frame and every box on that frame | evidence panel |
+| `GET /api/frames/{run}/{seq}/image`, `GET /api/blobs/{crop\|thumbnail}/{sha256}` | pixels (frames only from under `FRAME_ROOT`) | evidence panel |
+| `POST /api/instances/{run}/{cluster_key}/review` | writes `instance_reviews`, re-scores the run | Confirm / Reject |
+| `GET /api/runs/{id}/bench` | contract 4 row or null | benchmark box |
+| `GET /api/runs/{id}/position`, `/route`, `/track`, `/log`; `GET /api/network` | vehicle, planned route, driven legs, frame log, state roads | map, frame log |
+| `POST /api/runs/start`, `GET /api/runner`, `POST /api/runs/{id}/control` | queue a run, runner status, pause / resume / cancel | header controls |
+| `GET /api/bus?stuck_ms=30000` | `bus_health` | Bus health card |
 
 ```json
 {
   "run_summary": {
-    "run_id": "11111111-1111-1111-1111-111111111111",
-    "authority_id": "council-042",
-    "started_at": "2026-08-19T09:00:00+00:00",
-    "target_fps": 5.0
+    "run": {"run_id": "11111111-1111-1111-1111-111111111111", "authority_id": "demo-council",
+            "started_at": "2026-09-27T07:00:00+00:00", "ended_at": null,
+            "source_kind": "dataset-replay", "target_fps": 8.0},
+    "assessed_km": 14.2, "gap_m": 31.5, "defects": 412, "pending_review": 37,
+    "frames_offered": 5758, "frames_ingested": 5700, "frames_processed": 5700,
+    "frames_dropped": 15, "frames_in_flight": 43, "frames_accounted_pct": 99.3,
+    "bytes_stored": 48211002, "raw_bytes": 1043338211,
+    "segments_scored": 118, "segment_coverage_km": 11.8
   },
-  "coverage_point": {
-    "bucket": "2026-08-19T09:15:00+00:00",
-    "frames_ingested": 300,
-    "frames_processed": 297,
-    "frames_flagged": 12,
-    "frames_without_fix": 4
+  "bus_health": {
+    "readable": true, "stream": "frames", "group": "workers",
+    "stream_length": 61, "consumers": 2, "pending": 4, "lag": 57,
+    "consumer_rows": [{"name": "worker-a1", "pending": 2, "idle_ms": 140},
+                      {"name": "worker-b7", "pending": 2, "idle_ms": 95}],
+    "stuck_ms": 30000, "stuck": []
   }
 }
 ```
 
-`coverage_point` is one row of the `run_coverage_1min` view
-([`001_initial.sql`](../src/edgecv/db/migrations/001_initial.sql)): `frames_ingested` is the
-denominator for coverage ("we assessed 14.2 km of the 15 km segment" is only provable if every frame —
-clean ones included — gets counted), and it deliberately does **not** join `frames` to `inferences`
-directly, because `inferences` is `UNIQUE(run_id, seq, detector_id)` and one frame processed by N
-detectors would fan out to N rows and silently overstate every count.
+Semantics that are easy to get wrong:
 
-The map, worst-N-segments and review-queue endpoints that the dashboard docstring says are coming
-still need Joseph's design — `segments`, `defect_instances` and `instance_reviews`
-(`001_initial.sql`) exist as tables today but have no query shape frozen against them yet.
+- **`frames_accounted_pct`** is `(ingested + dropped) / offered`. A dropped frame is *accounted for*
+  (counted, and reported as `gap_m` of road not assessed). Only frames still in flight are not.
+  While a run is live, `offered` and `dropped` come from feed-sim's counters on the bus, because
+  `survey_runs.config` is written only when the feed ends.
+- **`lag: null`** means Redis cannot compute the backlog (entries ahead of the group were
+  deleted). Show "unknown", never 0 — see [`bus/observe.py`](../src/edgecv/bus/observe.py).
+- **`/api/bus` is not per run.** The bus is shared, so the card does not follow the run menu. It
+  always returns 200; `readable: false` with `error` means Redis is down or the `workers` group
+  does not exist yet, and the rest of the page (Postgres) still renders.
+- **Review state is derived, never stored on `defect_instances`.** The segmenter replaces those rows
+  every pass, so the effective state is `instance_reviews.review_state`, else `auto-accepted` at or
+  above `AUTO_ACCEPT_CONF`, else `pending`.
 
-**What changing it would break:** nothing today (there are no consumers), which is exactly why this is
-PROVISIONAL and not FROZEN. But `run_options`/`coverage_series` are what the Streamlit panel currently
-renders, so drifting the read API's shape away from `run_coverage_1min`'s columns means either the
-panel and the API disagree, or the panel has to be rewritten to match — decide before Week 5.
+**What changing it would break:** `api/static/app.js` (every panel), and the e2e assertions in
+`tests/e2e/test_pipeline.py` (summary, segments, worklist, bench, instances, evidence, review →
+re-score) and `tests/e2e/test_worker_failure.py` (`/api/bus` reports a dead worker's stuck
+entries). Still PROVISIONAL rather than FROZEN because the owner has not signed off — freezing it is
+Joseph's call.
 
 ---
 

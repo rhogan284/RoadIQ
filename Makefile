@@ -23,7 +23,7 @@ migrate:
 # consume from. It also TRUNCATES Postgres. So the app services stop first -- redis
 # and postgres stay up; `make stack` brings the rest back. Needs `make weights dataset`.
 test:
-	docker compose stop writer worker segmenter runner api dashboard
+	docker compose stop writer worker segmenter runner api
 	uv run pytest -v
 
 # --- E2E demo (docs/superpowers/specs/2026-09-27-e2e-demo-design.md) ---------------
@@ -37,7 +37,7 @@ dataset:
 
 # The long-lived services. feed-sim and bench are one-shot tools that `make e2e` runs.
 stack:
-	docker compose up -d --build redis postgres writer worker segmenter runner api dashboard
+	docker compose up -d --build redis postgres writer worker segmenter runner api
 
 # Replay the whole test split along the Sydney route, wait for the writer to land every
 # frame, segment, score against ground truth. Dashboard: http://localhost:8000
