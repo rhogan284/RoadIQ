@@ -118,6 +118,12 @@ def generate_manifest():
 
     cap.release()
 
+    # interpolate_position() returns a 0.0 heading placeholder at progress 0 and 1,
+    # so the first and last frames borrow their neighbour's real heading instead.
+    if len(manifest_records) >= 2:
+        manifest_records[0]["heading_deg"] = manifest_records[1]["heading_deg"]
+        manifest_records[-1]["heading_deg"] = manifest_records[-2]["heading_deg"]
+
     manifest_data = {"clean": manifest_records, "defect": []}
     with open(OUTPUT_MANIFEST, "w") as f:
         json.dump(manifest_data, f, indent=2)
