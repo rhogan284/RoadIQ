@@ -13,7 +13,7 @@ from pathlib import Path
 
 from edgecv.geo import LatLon, haversine_m
 
-DEFAULT_NETWORK = Path(__file__).resolve().parent / "sydney_demo.geojson"
+DEFAULT_NETWORK = Path(__file__).resolve().parent / "lackey_road.geojson"
 SEGMENT_M = 100.0
 #: A tail shorter than this is merged into the previous segment instead of standing
 #: alone: a 12 m segment gets a wild condition index from one crack.

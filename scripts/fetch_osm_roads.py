@@ -24,7 +24,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-BBOX = (-33.8895, 151.1880, -33.8790, 151.2010)   # south, west, north, east
+# Moss Vale, NSW bounding box (south, west, north, east)
+BBOX = (-34.5600, 150.3600, -34.5300, 150.4000)
 HIGHWAYS = "residential|tertiary|secondary|unclassified"
 ARTERIALS = "primary|trunk|primary_link|secondary_link|tertiary_link"
 DROP_SUFFIXES = (" Lane", " Place", " Court")

@@ -28,7 +28,7 @@ import redis
 from edgecv.bus.observe import group_health
 from edgecv.config import Settings
 
-ROUTE = "src/edgecv/roads/sydney_demo.geojson"
+ROUTE = "src/edgecv/roads/lackey_road.geojson"
 MANIFEST = "data/rdd2022/manifest.json"
 GT = "data/rdd2022/ground_truth.json"
 

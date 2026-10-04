@@ -32,8 +32,8 @@ from edgecv.feedsim.gpstrack import DEFAULT_ACCURACY_M, Fix, SyntheticTrack
 from edgecv.feedsim.prevalence import PrevalenceSampler
 from edgecv.feedsim.route import RouteTrack
 
-#: Sydney CBD, George and Market. An arbitrary but plausible survey origin.
-DEFAULT_START = (-33.8688, 151.2093)
+#: Moss Vale center (Lackey Road area).
+DEFAULT_START = (-34.5450, 150.3720)
 #: 50 km/h in m/s -- an urban survey speed.
 DEFAULT_SPEED_MPS = 13.89
 DEFAULT_BEARING_DEG = 90.0
@@ -197,9 +197,9 @@ def main() -> None:
                     default="reference")
     ap.add_argument("--order", choices=["sample", "all"], default="sample",
                     help="all = every manifest image once (ignores --frames, --prevalence)")
-    ap.add_argument("--route", type=Path, default=None,
-                    help="drive along this road-network GeoJSON instead of a straight "
-                         "line (e.g. src/edgecv/roads/sydney_demo.geojson)")
+    ap.add_argument("--route", type=Path, default=Path("src/edgecv/roads/lackey_road.geojson"),
+                help="drive along this road-network GeoJSON instead of a straight "
+                     "line (e.g. src/edgecv/roads/lackey_road.geojson)")
     ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random",
                     help="random = a new randomised drive over the council streets each "
                          "run, sized to the frame count; loop = the fixed main-road loop; "

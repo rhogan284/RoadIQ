@@ -32,7 +32,7 @@ const label = (inst) => {
 
 // ------------------------------------------------------------------ map
 const map = L.map("map", { preferCanvas: true, zoomSnap: 0.25, zoomControl: true, attributionControl: true })
-  .setView([-33.8843, 151.1945], 16);
+  .setView([-34.5450, 150.3720], 14);
 // Greyed OSM tiles for street context only (CSS filter on .basemap). If they cannot load
 // (no internet at the demo) the segments still draw on the plain background.
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
