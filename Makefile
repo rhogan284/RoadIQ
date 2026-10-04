@@ -1,4 +1,4 @@
-.PHONY: install up down migrate test weights dataset stack e2e evaluate
+.PHONY: install up down migrate test weights dataset stack e2e evaluate video
 
 # Editable-install .pth files can end up ignored by site.py (e.g. macOS marks
 # them UF_HIDDEN, or the working directory just isn't on sys.path). Setting
@@ -48,3 +48,12 @@ e2e: stack
 # Re-score the latest run without replaying it.
 evaluate:
 	docker compose run --rm -T bench python -m edgecv.bench.evaluate --load-gt data/rdd2022/ground_truth.json
+
+# Replay a dashcam video instead of the dataset, in capture order, along the same
+# simulated route. No ground truth, so no bench step.
+#   make video VIDEO=~/Downloads/road_footage.mp4
+VIDEO ?=
+VIDEO_DIR = data/video/$(basename $(notdir $(VIDEO)))
+video: stack
+	uv run python -m scripts.extract_video "$(VIDEO)" --fps $(FPS) --out $(VIDEO_DIR)
+	uv run python -m scripts.e2e --fps $(FPS) --manifest $(VIDEO_DIR)/manifest.json --no-bench

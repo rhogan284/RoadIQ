@@ -23,7 +23,7 @@ import psycopg
 import redis
 
 from edgecv.config import Settings
-from edgecv.runner import GT, feed_args, wait_for_drain
+from edgecv.runner import GT, MANIFEST, feed_args, wait_for_drain
 
 
 def compose(*args: str) -> None:
@@ -40,6 +40,10 @@ def main() -> None:
     ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random")
     ap.add_argument("--route-seed", type=int, default=None)
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--manifest", default=MANIFEST,
+                    help="a video manifest from scripts/extract_video.py replays that drive")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="skip scoring: footage with no ground truth has nothing to score")
     args = ap.parse_args()
 
     settings = Settings.from_env()
@@ -47,15 +51,17 @@ def main() -> None:
     t0 = time.monotonic()
     compose("feedsim", "python", "-m", "edgecv.feedsim.main", *feed_args(
         run_id=run_id, fps=args.fps, speed_mps=args.speed_mps, route_mode=args.route_mode,
-        route_seed=args.route_seed, max_frames=args.max_frames))
+        route_seed=args.route_seed, max_frames=args.max_frames, manifest=args.manifest,
+        source_kind="dataset-replay" if args.manifest == MANIFEST else "drive"))
     print(f"feed finished in {time.monotonic() - t0:.0f} s; waiting for the pipeline to drain",
           flush=True)
     with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
         wait_for_drain(conn, redis.from_url(settings.redis_url), run_id,
                        timeout_s=args.timeout_s)
     compose("segmenter", "python", "-m", "edgecv.segmenter.main", "--once", "--run-id", run_id)
-    compose("bench", "python", "-m", "edgecv.bench.evaluate", "--load-gt", GT,
-            "--run-id", run_id)
+    if not args.no_bench:
+        compose("bench", "python", "-m", "edgecv.bench.evaluate", "--load-gt", GT,
+                "--run-id", run_id)
     print(f"\nE2E complete in {time.monotonic() - t0:.0f} s · run {run_id}\n"
           f"Dashboard: http://localhost:8000   Pipeline panel: http://localhost:8501")
 
