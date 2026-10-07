@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
 
 # The cache mount below is its own filesystem, so uv cannot hard-link from it.
-ENV UV_LINK_MODE=copy
+# uv's default 30 s HTTP timeout failed a build on a slow link (7 Oct 2026); allow 5 min.
+ENV UV_LINK_MODE=copy UV_HTTP_TIMEOUT=300
 
 WORKDIR /app
 # Dependencies first, from the lock file alone: this layer (torch and all, ~1 GB) is

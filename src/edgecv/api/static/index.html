@@ -56,23 +56,6 @@
           <tbody id="worklist"></tbody>
         </table></div>
       </div>
-
-      <!-- What is still in flight on the bus. Shared by every run, so it does not follow
-           the run menu. -->
-      <div class="card bus-card">
-        <div class="card-head">
-          <h2>Bus health</h2>
-          <span class="muted" id="bus-note">frames stream · workers group</span>
-        </div>
-        <div class="bus-stats">
-          <div><b id="b-len">–</b><span>stream length</span></div>
-          <div><b id="b-lag">–</b><span>lag · not yet delivered</span></div>
-          <div><b id="b-pend">–</b><span>pending · in flight</span></div>
-          <div><b id="b-cons">–</b><span>consumers</span></div>
-        </div>
-        <p id="bus-stuck" class="bus-warn" hidden></p>
-        <div id="bus-tables" class="bus-tables"></div>
-      </div>
     </section>
 
     <section class="card evidence">
@@ -108,9 +91,13 @@
   <dialog id="new-run-dlg" class="dlg">
     <form method="dialog" id="new-run-form">
       <h3>New survey run</h3>
-      <p class="muted">Replays RDD2022 test images along a road route, through every component,
-        then segments and scores the run.</p>
-      <label>Images
+      <p class="muted" id="new-run-blurb">Replays RDD2022 test images along a road route, through
+        every component, then segments and scores the run.</p>
+      <label>Source
+        <select name="source" id="new-run-source">
+          <option value="rdd2022" selected>RDD2022 test split</option>
+        </select></label>
+      <label id="new-run-images">Images
         <select name="max_frames">
           <option value="">Whole test split (5,758 · ~12 min at 8 fps)</option>
           <option value="1000">1,000 random images (~2 min)</option>
