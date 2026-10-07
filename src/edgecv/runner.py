@@ -21,6 +21,7 @@ import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import psycopg
 import redis
@@ -31,6 +32,33 @@ from edgecv.config import Settings
 ROUTE = "src/edgecv/roads/sydney_demo.geojson"
 MANIFEST = "data/rdd2022/manifest.json"
 GT = "data/rdd2022/ground_truth.json"
+VIDEO_ROOT = "data/video"
+DATASET = "rdd2022"
+
+
+def sources() -> list[dict]:
+    """What a run can replay: the RDD2022 test split, and every video that
+    scripts/extract_video.py has turned into a manifest under data/video/. Each id is
+    one of these, never a path from the request, so a run reads only these manifests."""
+    found = []
+    if Path(MANIFEST).is_file():
+        found.append({"id": DATASET, "kind": "dataset-replay", "manifest": MANIFEST,
+                      "label": "RDD2022 test split", "frames": None, "scored": True})
+    for m in sorted(Path(VIDEO_ROOT).glob("*/manifest.json")):
+        meta = json.loads(m.read_text())
+        found.append({"id": f"video:{m.parent.name}", "kind": "drive",
+                      "manifest": m.as_posix(),
+                      "label": meta.get("source", m.parent.name).removeprefix("video:"),
+                      "frames": len(meta.get("clean", [])) + len(meta.get("defect", [])),
+                      "sample_fps": meta.get("sample_fps"), "scored": False})
+    return found
+
+
+def source(source_id: str) -> dict:
+    for s in sources():
+        if s["id"] == source_id:
+            return s
+    raise SystemExit(f"unknown source {source_id!r}")
 
 
 def wait_for_drain(conn, client, run_id: str, *, timeout_s: float,
@@ -92,19 +120,23 @@ def _step(*module_and_args: str, sink=None) -> None:
 
 
 def run_once(req: dict, *, settings: Settings, sink=None, on_phase=lambda _p: None) -> None:
-    """Feed → drain → segment → bench for one request (a StartRun body + run_id)."""
+    """Feed → drain → segment → bench for one request (a StartRun body + run_id). A video
+    source has no ground truth, so its run stops after the segmenter."""
     t0 = time.monotonic()
+    src = source(req.get("source", DATASET))
     on_phase("feeding")
     _step("edgecv.feedsim.main", *feed_args(
         run_id=req["run_id"], fps=req.get("fps", 8.0), speed_mps=req.get("speed_mps", 13.89),
         route_mode=req.get("route_mode", "random"), route_seed=req.get("route_seed"),
-        max_frames=req.get("max_frames")), sink=sink)
+        max_frames=req.get("max_frames"), manifest=src["manifest"],
+        source_kind=src["kind"]), sink=sink)
     on_phase("scoring")
     with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
         wait_for_drain(conn, redis.from_url(settings.redis_url), req["run_id"],
                        timeout_s=req.get("timeout_s", 900), stream=settings.frames_stream)
     _step("edgecv.segmenter.main", "--once", "--run-id", req["run_id"], sink=sink)
-    _step("edgecv.bench.evaluate", "--load-gt", GT, "--run-id", req["run_id"], sink=sink)
+    if src["scored"]:
+        _step("edgecv.bench.evaluate", "--load-gt", GT, "--run-id", req["run_id"], sink=sink)
     msg = f"run {req['run_id']} complete in {time.monotonic() - t0:.0f} s"
     print(msg, flush=True)
     if sink:
@@ -157,6 +189,8 @@ def main() -> None:
     ap.add_argument("--serve", action="store_true",
                     help="run requests from the runner:requests queue, forever")
     ap.add_argument("--run-id")
+    ap.add_argument("--source", default=DATASET,
+                    help="rdd2022, or video:<name> for a manifest under data/video/")
     ap.add_argument("--fps", type=float, default=8.0)
     ap.add_argument("--speed-mps", type=float, default=13.89)
     ap.add_argument("--route-mode", choices=["random", "loop", "cover"], default="random")
@@ -171,7 +205,7 @@ def main() -> None:
         return
     if not args.run_id:
         ap.error("--run-id is required unless --serve")
-    run_once({"run_id": args.run_id, "fps": args.fps, "speed_mps": args.speed_mps,
+    run_once({"run_id": args.run_id, "source": args.source, "fps": args.fps, "speed_mps": args.speed_mps,
               "route_mode": args.route_mode, "route_seed": args.route_seed,
               "max_frames": args.max_frames, "timeout_s": args.timeout_s},
              settings=settings)

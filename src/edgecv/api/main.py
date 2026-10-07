@@ -31,6 +31,7 @@ from edgecv.config import Settings
 from edgecv.contracts.frame import FrameEnvelope
 from edgecv.feedsim.main import control_key, state_key
 from edgecv.runner import LOG as RUNNER_LOG, REQUESTS as RUNNER_REQUESTS, STATUS as RUNNER_STATUS
+from edgecv.runner import DATASET, sources as runner_sources
 from edgecv.roads import load_ways
 from edgecv.segmenter.index import AUTO_ACCEPT_CONF
 from edgecv.segmenter.main import HEADING_TOL_DEG, SNAP_LATERAL, SNAP_M, segment_run
@@ -421,6 +422,7 @@ def control(run_id: str, body: Control) -> dict:
 
 
 class StartRun(BaseModel):
+    source: str = DATASET                  # an id from GET /api/sources
     fps: float = 8.0
     max_frames: int | None = None          # None = the whole test split
     route_mode: Literal["random", "loop"] = "random"
@@ -434,6 +436,12 @@ def _runner_state(client) -> dict:
     return client.hgetall(RUNNER_STATUS) or {}
 
 
+@app.get("/api/sources")
+def sources() -> list[dict]:
+    """What the New run dialog can replay: the dataset and each extracted video."""
+    return [{k: v for k, v in s.items() if k != "manifest"} for s in runner_sources()]
+
+
 @app.post("/api/runs/start")
 def start_run(body: StartRun) -> dict:
     """Queue a new survey run for the `runner` service (feed-sim → drain → segmenter →
@@ -443,6 +451,8 @@ def start_run(body: StartRun) -> dict:
         raise HTTPException(422, "fps must be between 1 and 30")
     if body.max_frames is not None and body.max_frames < 10:
         raise HTTPException(422, "max_frames must be at least 10")
+    if body.source not in {s["id"] for s in runner_sources()}:
+        raise HTTPException(422, f"unknown source {body.source!r}")
     client = redis.from_url(SETTINGS.redis_url, decode_responses=True)
     state = _runner_state(client)
     if state.get("state") in RUNNER_BUSY or client.llen(RUNNER_REQUESTS):

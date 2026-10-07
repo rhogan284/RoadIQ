@@ -501,10 +501,41 @@ async function renderRunner() {
   $("new-run").hidden = feeding || !!(r && r.alive);
 }
 
+// The Source select lists what GET /api/sources finds: the dataset and every video that
+// `make video` has extracted. A video plays whole and in order, so "Images" is hidden.
+const BLURB = {
+  "dataset-replay": "Replays RDD2022 test images along a road route, through every component, " +
+                    "then segments and scores the run.",
+  drive: "Replays the recorded video in capture order along a road route, through every " +
+         "component, then segments the run. No ground truth, so it is not scored.",
+};
+let SOURCES = [];
+
+async function loadSources() {
+  SOURCES = await api("/sources").catch(() => SOURCES);
+  if (!SOURCES.length) return;
+  const src = $("new-run-source"), keep = src.value;
+  src.innerHTML = SOURCES.map((s) => {
+    const n = s.frames ? ` (${s.frames.toLocaleString("en-AU")} frames)` : "";
+    const name = s.kind === "drive" ? `Video: ${s.label}` : s.label;
+    return `<option value="${s.id}">${name}${n}</option>`;
+  }).join("");
+  if (SOURCES.some((s) => s.id === keep)) src.value = keep;
+  syncSource();
+}
+
+function syncSource() {
+  const s = SOURCES.find((x) => x.id === $("new-run-source").value);
+  const kind = s ? s.kind : "dataset-replay";
+  $("new-run-images").hidden = kind === "drive";
+  $("new-run-blurb").textContent = BLURB[kind];
+}
+
 async function startRun(form) {
   const f = new FormData(form);
-  const body = { fps: Number(f.get("fps")), route_mode: f.get("route_mode"),
-                 max_frames: f.get("max_frames") ? Number(f.get("max_frames")) : null,
+  const video = $("new-run-images").hidden;
+  const body = { source: f.get("source"), fps: Number(f.get("fps")), route_mode: f.get("route_mode"),
+                 max_frames: !video && f.get("max_frames") ? Number(f.get("max_frames")) : null,
                  route_seed: f.get("route_seed") === "" ? null : Number(f.get("route_seed")) };
   const r = await fetch("/api/runs/start", { method: "POST",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -629,7 +660,12 @@ async function boot() {
   setInterval(tick, LIVE_MS);
   setInterval(() => { if (S.live && !document.hidden) renderPosition(); }, CAR_MS);
   setInterval(() => { if (!$("log").hidden && !LOG.paused) logPoll(); }, 1000);
-  $("new-run").onclick = () => { $("new-run-err").textContent = ""; $("new-run-dlg").showModal(); };
+  $("new-run").onclick = () => {
+    $("new-run-err").textContent = "";
+    loadSources();                          // a video extracted since page load shows up
+    $("new-run-dlg").showModal();
+  };
+  $("new-run-source").onchange = syncSource;
   $("new-run-go").onclick = async (ev) => {
     ev.preventDefault();
     $("new-run-go").disabled = true;
