@@ -65,6 +65,8 @@ def test_rdd2022_through_every_component(rds, clean_db, rdd_subset, detector, tm
                      batch=50).frames:
         pass
     assert _scalar(clean_db, "SELECT count(*) FROM frames") == 40
+    # W8: every frame lands in a monthly partition; DEFAULT is a safety net only.
+    assert _scalar(clean_db, "SELECT count(*) FROM frames_default") == 0
     assert _scalar(clean_db, "SELECT count(*) FROM inferences WHERE status = 'ok'") == 40
     n_det = _scalar(clean_db, "SELECT count(*) FROM detections")
     assert n_det > 0, "YOLOv12s found nothing on 20 labelled damage images"

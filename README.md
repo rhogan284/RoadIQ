@@ -145,7 +145,9 @@ detector's `params`, so a swap is a new `detectors` row and benchmark rows never
   from the run's crop hashes. Thumbnails are not linked to a run.
 - A run started from the dashboard stops if the `runner` container is restarted; it is
   left open and can be cancelled.
-- Partitioning is untouched: frames still land in `frames_default` (ILC T2 work).
+- Only `frames` is partitioned (monthly on `captured_at`, kept 3 months ahead by
+  `ensure_frame_partitions()` at every start). `inferences`, `detections` and `snippets`
+  are plain tables, and there is no retention reaper yet.
 
 ## Architecture
 
