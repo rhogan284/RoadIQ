@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 # single lockable resource. Any int64 works; this one has no other meaning.
 MIGRATION_LOCK_KEY = 847_291_002
 
+# Monthly frames partitions are kept this far ahead of now() (002_frame_partitions.sql).
+# Every service start re-runs it, so a long-lived stack never reaches a month that has
+# no partition and starts filling DEFAULT again.
+PARTITION_MONTHS_AHEAD = 3
+
 
 def apply_migrations(conn: psycopg.Connection) -> list[str]:
     """Apply any unapplied migration files in filename order. Returns those applied.
@@ -58,6 +63,14 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
                     (version,),
                 )
             applied.append(version)
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT ensure_frame_partitions(%s)", (PARTITION_MONTHS_AHEAD,))
+            stranded = cur.fetchone()[0]
+        if stranded:
+            # DEFAULT is a safety net, not a destination: rows there block the
+            # partition they belong to. Rescued now, but it means a month was missed.
+            print(f"ensure_frame_partitions: moved {stranded} frames out of frames_default")
         return applied
     finally:
         with conn.cursor() as cur:
