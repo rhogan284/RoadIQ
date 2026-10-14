@@ -1,5 +1,11 @@
 x-app: &app
-  build: .
+  # One image for every app service, built once by `writer` (the only service with
+  # `build:`). With `build:` on each, compose builds the same Dockerfile once per
+  # service, even under one image name. `never`: a missing image is an error here,
+  # not a pull of a name that exists on no registry; `make stack` builds it.
+  # Per project, so a worktree's build never replaces the main checkout's image.
+  image: ${COMPOSE_PROJECT_NAME:-roadiq}-app
+  pull_policy: never
   depends_on:
     redis: {condition: service_healthy}
     postgres: {condition: service_healthy}
@@ -49,6 +55,8 @@ services:
 
   writer:
     <<: *app
+    build: .
+    pull_policy: missing
     command: python -m edgecv.writer.main
 
   worker:
