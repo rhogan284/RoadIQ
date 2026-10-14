@@ -70,6 +70,12 @@ def load_pools(manifest_path: Path) -> tuple[list[str], list[str]]:
             [entry["path"] for entry in manifest["defect"]])
 
 
+def is_ordered(manifest_path: Path) -> bool:
+    """A video manifest (scripts/extract_video.py) is one drive: replay it in capture
+    order. Shuffling is only right for a dataset of unrelated photos."""
+    return bool(json.loads(Path(manifest_path).read_text()).get("ordered", False))
+
+
 def build_envelope(*, run_id: str, seq: int, path: str, data: bytes,
                    width: int, height: int, transport: str,
                    fix: Fix | None = None) -> FrameEnvelope:
@@ -111,7 +117,8 @@ def run_feed(client: redis.Redis, *, manifest: Path, run_id: str | None,
     run_id = run_id or str(uuid.uuid4())
     clean, defect = load_pools(manifest)
     paths = clean + defect
-    random.Random(seed).shuffle(paths)
+    if not is_ordered(manifest):
+        random.Random(seed).shuffle(paths)
     # A short demo run takes the first N of the shuffle — a random sample of the
     # split, not its first N files, which would all be one country.
     if max_frames:
