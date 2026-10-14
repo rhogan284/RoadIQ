@@ -29,6 +29,7 @@
     },
     "capture_mono_ns": {
       "type": "integer",
+      "minimum": 0,
       "description": "Required (not optional, unlike the frame envelope) \u2014 the manifest is device-authored, so the boot-relative clock always exists at capture time."
     },
     "device_boot_id": {
@@ -43,31 +44,39 @@
       "type": [
         "number",
         "null"
-      ]
+      ],
+      "minimum": -90,
+      "maximum": 90
     },
     "lon": {
       "type": [
         "number",
         "null"
-      ]
+      ],
+      "minimum": -180,
+      "maximum": 180
     },
     "heading_deg": {
       "type": [
         "number",
         "null"
-      ]
+      ],
+      "minimum": 0,
+      "maximum": 360
     },
     "speed_mps": {
       "type": [
         "number",
         "null"
-      ]
+      ],
+      "minimum": 0
     },
     "gps_accuracy_m": {
       "type": [
         "number",
         "null"
-      ]
+      ],
+      "minimum": 0
     }
   },
   "dependentRequired": {

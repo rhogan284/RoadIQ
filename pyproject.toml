@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-timeout>=2.3", "httpx>=0.27"]
+dev = ["pytest>=8.3", "pytest-timeout>=2.3", "httpx>=0.27", "jsonschema>=4.23"]
 # The YOLOv12s detector's runtime. A group, not a core dependency, so the read API and
 # dashboard still install without torch. ultralytics is AGPL-3.0 (Licence Register).
 yolo = ["ultralytics>=8.3.100", "torch", "torchvision"]
