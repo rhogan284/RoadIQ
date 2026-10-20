@@ -614,4 +614,41 @@ def frame_log(run_id: str, after_id: int | None = None, limit: int = 200) -> dic
     return {"lines": lines, "cursor": lines[-1]["inference_id"] if lines else after_id}
 
 
+@app.get("/api/runs/{run_id}/live")
+def live_frame(run_id: str) -> dict:
+    """The Live Feed tab: the newest frame to land and every box the worker found on it.
+    Newest LANDED, not newest published, so its boxes are always there to draw; the bus's
+    newest seq comes along so the viewer can see how far behind the pipeline is."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT i.inference_id, i.seq, i.worker_id, i.status,
+                   i.latency_ms::float8 AS latency_ms, f.captured_at, f.width, f.height,
+                   f.lat, f.lon, f.speed_mps::float8 AS speed_mps, f.source_ref,
+                   coalesce((SELECT json_agg(json_build_object(
+                               'defect_class', d.defect_class,
+                               'confidence', d.confidence::float8,
+                               'bbox_x', d.bbox_x, 'bbox_y', d.bbox_y,
+                               'bbox_w', d.bbox_w, 'bbox_h', d.bbox_h)
+                               ORDER BY d.confidence DESC)
+                             FROM detections d WHERE d.inference_id = i.inference_id),
+                            '[]'::json) AS boxes
+            FROM inferences i
+            JOIN frames f ON f.run_id = i.run_id AND f.seq = i.seq
+                         AND f.captured_at = i.captured_at
+            WHERE i.run_id = %s
+            ORDER BY i.inference_id DESC LIMIT 1""", (run_id,))
+        found = rows(cur)
+        cur.execute("SELECT count(*) FROM inferences WHERE run_id = %s", (run_id,))
+        landed = cur.fetchone()[0]
+    feed_state = _feed_state(run_id)
+    if not found:
+        return {"frame": None, "landed": 0, "bus_seq": None, "feed_state": feed_state,
+                "auto_accept_conf": AUTO_ACCEPT_CONF}
+    frame = found[0]
+    frame["source_ref"] = frame["source_ref"].rsplit("/", 1)[-1]
+    bus = _latest_published(run_id)
+    return {"frame": frame, "landed": landed, "bus_seq": bus["seq"] if bus else None,
+            "feed_state": feed_state, "auto_accept_conf": AUTO_ACCEPT_CONF}
+
+
 app.mount("/static", StaticFiles(directory=STATIC, html=True), name="static")
