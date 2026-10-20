@@ -260,47 +260,49 @@ function renderWorklist() {
   }
 }
 
-function selectSegment(segmentId) {
+// `focus`: a click opens the Evidence tab; an automatic pick (first load, live refresh)
+// fills it in the background, so the Live Feed isn't pulled away mid-run.
+function selectSegment(segmentId, focus = true) {
   S.segment = segmentId;
   highlightSegment(segmentId);
   renderWorklist();
   const on = S.instances.filter((i) => i.segment_id === segmentId && i.state !== "rejected"
                                        && i.defect_class !== "other");
   on.sort((a, b) => (ACCEPTED.has(b.state) - ACCEPTED.has(a.state)) || b.confidence - a.confidence);
-  if (on.length) showInstance(on[0].cluster_key);
-  else showSegment(segmentId);                     // no defects: show the road itself
+  if (on.length) showInstance(on[0].cluster_key, focus);
+  else showSegment(segmentId, focus);              // no defects: show the road itself
 }
 
 // ------------------------------------------------------------------ evidence
 const canvas = $("frame"), ctx = canvas.getContext("2d");
 
-function drawBox(b, sx, sy, { strong, pending, rejected, other }) {
+function drawBox(b, sx, sy, { strong, pending, rejected, other }, g = ctx) {
   const x = b.bbox_x * sx, y = b.bbox_y * sy, w = b.bbox_w * sx, h = b.bbox_h * sy;
   const col = pending ? "#d9a03a" : rejected ? "#a83e2c" : other ? "#c6cdd4" : "#4e9cbe";
-  ctx.save();
-  ctx.strokeStyle = col;
-  ctx.lineWidth = strong ? 4 : 2.5;
-  if (pending || rejected || other) ctx.setLineDash([12, 8]);
-  ctx.strokeRect(x, y, w, h);
-  ctx.setLineDash([]);
+  g.save();
+  g.strokeStyle = col;
+  g.lineWidth = strong ? 4 : 2.5;
+  if (pending || rejected || other) g.setLineDash([12, 8]);
+  g.strokeRect(x, y, w, h);
+  g.setLineDash([]);
   if (!pending && !rejected && !other) {           // the mock-up's corner ticks
-    ctx.lineWidth = strong ? 9 : 6;
+    g.lineWidth = strong ? 9 : 6;
     const t = Math.min(26, w / 3, h / 3);
     for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
-      ctx.beginPath(); ctx.moveTo(cx + t * dx, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + t * dy); ctx.stroke();
+      g.beginPath(); g.moveTo(cx + t * dx, cy); g.lineTo(cx, cy); g.lineTo(cx, cy + t * dy); g.stroke();
     }
   }
   const cls = b.defect_class;
   const text = `${cls} ${(CLASS_NAME[cls] ?? cls).toUpperCase()} · ${b.confidence.toFixed(2)}` +
                (pending ? " · REVIEW" : rejected ? " · REJECTED" : "");
-  ctx.font = "bold 17px Helvetica, Arial, sans-serif";
-  const tw = ctx.measureText(text).width + 16;
+  g.font = "bold 17px Helvetica, Arial, sans-serif";
+  const tw = g.measureText(text).width + 16;
   const ty = Math.max(0, y - 28);
-  ctx.fillStyle = pending ? "#b4801f" : rejected ? "#a83e2c" : other ? "#8b96a3" : "#0d6d92";
-  ctx.fillRect(x, ty, tw, 26);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(text, x + 8, ty + 19);
-  ctx.restore();
+  g.fillStyle = pending ? "#b4801f" : rejected ? "#a83e2c" : other ? "#8b96a3" : "#0d6d92";
+  g.fillRect(x, ty, tw, 26);
+  g.fillStyle = "#fff";
+  g.fillText(text, x + 8, ty + 19);
+  g.restore();
 }
 
 function drawPlaceholder(msg) {
@@ -339,10 +341,10 @@ function resetEvidence() {
 }
 
 // A road with no open defects: show what we know about the road instead.
-function showSegment(segmentId) {
+function showSegment(segmentId, focus = true) {
   const f = S.geo.features.find((x) => x.properties.segment_id === segmentId);
   if (!f) return;
-  showTab("evidence");
+  if (focus) showTab("evidence");
   S.current = null;
   const p = f.properties, band = p.condition_band;
   $("ev-title").textContent = `${segRef(p.road_ref)} · ${p.road_name || "Unnamed road"}`;
@@ -365,16 +367,13 @@ function showSegment(segmentId) {
   renderQueue();
 }
 
-async function showInstance(key) {
-  showTab("evidence");                              // any defect click lands on Evidence
+async function showInstance(key, focus = true) {
+  if (focus) showTab("evidence");                   // any defect click lands on Evidence
   const inst = await api(`/instances/${S.run}/${key}`);
   S.current = inst;
   if (inst.segment_id && inst.segment_id !== S.segment) {
     S.segment = inst.segment_id; highlightSegment(inst.segment_id); renderWorklist();
   }
-  const idx = S.queue.findIndex((q) => q.cluster_key === key);
-  $("queue-label").textContent = idx >= 0 ? `Review queue · ${idx + 1} of ${S.queue.length}`
-                                          : `Review queue · ${S.queue.length} pending`;
   $("ev-title").textContent = `Defect ${key.slice(0, 6)}  ·  ${label(inst)}`;
   const chip = $("ev-state");
   chip.textContent = inst.state === "pending" ? "Awaiting sign-off" : inst.state.replace("-", " ");
@@ -477,11 +476,117 @@ function step(delta) {
 function showTab(name) {
   for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-page")) p.hidden = p.dataset.page !== name;
+  if (name === "live") renderLiveFeed();
 }
 
+// ------------------------------------------------------------------ live feed
+// The newest frame to land in Postgres, with every box the worker drew on it, polled every
+// LIVE_FEED_MS while a run is live. A finished run shows its last frame once. The next
+// image is drawn only after it has loaded, so the picture never flashes blank between frames.
+const LIVE_FEED_MS = 500;
+const lfCanvas = $("lf-frame"), lfCtx = lfCanvas.getContext("2d");
+const LF = { run: null, seq: null, busy: false, doneFor: null };
+
+function liveFeedReset() {
+  Object.assign(LF, { run: null, seq: null, doneFor: null });
+  lfEmpty("Waiting for the first frame…");
+  $("lf-meta").innerHTML = "";
+  $("lf-hud-l").textContent = $("lf-hud-r").textContent = "";
+}
+
+function lfEmpty(msg) {
+  $("lf-wrap").classList.add("empty");
+  lfCanvas.width = 960; lfCanvas.height = 400;
+  lfCtx.fillStyle = "#e9eef4"; lfCtx.fillRect(0, 0, lfCanvas.width, lfCanvas.height);
+  lfCtx.fillStyle = "#5b6674"; lfCtx.font = "20px Helvetica, Arial"; lfCtx.textAlign = "center";
+  lfCtx.fillText(msg, lfCanvas.width / 2, lfCanvas.height / 2);
+  lfCtx.textAlign = "start";
+}
+
+const loadImage = (src) => new Promise((ok, fail) => {
+  const img = new Image();
+  img.onload = () => ok(img); img.onerror = fail; img.src = src;
+});
+
+function renderLiveChip(r) {
+  const chip = $("lf-state");
+  const feeding = S.live && !["cancelled", "done"].includes(r.feed_state);
+  const paused = feeding && r.feed_state === "paused";
+  chip.textContent = paused ? "Paused" : feeding ? "● Live" : r.frame ? "Last frame" : "—";
+  chip.className = "chip " + (paused ? "pending" : feeding ? "live" : "muted-chip");
+  $("live-dot").hidden = !feeding || paused;
+}
+
+async function renderLiveFeed() {
+  if (LF.busy || !S.run) return;
+  LF.busy = true;
+  const run = S.run;
+  try {
+    const r = await api(`/runs/${run}/live`);
+    if (run !== S.run) return;                      // the viewer switched runs meanwhile
+    renderLiveChip(r);
+    if (!S.live) LF.doneFor = run;                  // a finished run needs no more polls
+    const f = r.frame;
+    if (!f) {
+      lfEmpty(S.live ? "Waiting for the first frame…" : "No frames landed in this run");
+      $("lf-caption").textContent = S.live ? "The run has started. Frames appear here as the workers finish them."
+                                          : "This run has no processed frames.";
+      return;
+    }
+    const behind = r.bus_seq != null && S.live ? Math.max(0, r.bus_seq - f.seq) : null;
+    const boxes = f.boxes.filter((b) => b.defect_class !== "other");
+    const meta = [
+      ["Frames landed", r.landed.toLocaleString()],
+      ["Pipeline", behind == null ? (S.live ? "caught up" : "run finished") : behind ? `${behind} frames behind the vehicle` : "caught up"],
+      ["On this frame", boxes.length ? boxes.map((b) => `${b.defect_class} ${b.confidence.toFixed(2)}`).join(", ") : "no damage"],
+      ["Worker", f.worker_id],
+    ];
+    $("lf-meta").innerHTML = meta.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
+    if (LF.run === run && LF.seq === f.seq) return; // same frame: nothing to redraw
+
+    let img;
+    try {
+      img = await loadImage(`/api/frames/${run}/${f.seq}/image`);
+    } catch {
+      lfEmpty(`Frame ${f.seq}: pixels not available — only crops left the vehicle`);
+      Object.assign(LF, { run, seq: f.seq });
+      return;
+    }
+    if (run !== S.run) return;
+    const scale = Math.min(960 / img.width, 720 / img.height);
+    lfCanvas.width = Math.round(img.width * scale);
+    lfCanvas.height = Math.round(img.height * scale);
+    lfCtx.drawImage(img, 0, 0, lfCanvas.width, lfCanvas.height);
+    const sx = lfCanvas.width / f.width, sy = lfCanvas.height / f.height;
+    for (const b of f.boxes) {
+      drawBox(b, sx, sy, { pending: b.confidence < r.auto_accept_conf,
+                           other: b.defect_class === "other" }, lfCtx);
+    }
+    $("lf-wrap").classList.remove("empty");
+    Object.assign(LF, { run, seq: f.seq });
+    const kmh = f.speed_mps == null ? "—" : `${Math.round(f.speed_mps * 3.6)} km/h`;
+    $("lf-hud-l").textContent = `frame ${String(f.seq).padStart(5, "0")}  ·  ${Math.round(f.latency_ms)} ms inference`;
+    $("lf-hud-r").textContent = f.lat == null ? kmh : `${f.lat.toFixed(4)}, ${f.lon.toFixed(4)}  ·  ${kmh}`;
+    $("lf-caption").textContent = `Source ${f.source_ref}. ` + (boxes.length
+      ? `${boxes.length} defect${boxes.length === 1 ? "" : "s"} found; dashed amber boxes go to the review queue.`
+      : "No damage found on this frame.");
+  } catch (e) {
+    $("lf-caption").textContent = `Live feed unavailable: ${e.message}`;
+  } finally {
+    LF.busy = false;
+  }
+}
+
+// The queue tab's count and the Evidence tab's "Review queue · …" line, from the same
+// S.queue on every refresh, so the two can never disagree.
 function renderQueue() {
   $("queue-count").textContent = S.queue.length;
   const cur = S.current && S.current.cluster_key;
+  const idx = cur ? S.queue.findIndex((q) => q.cluster_key === cur) : -1;
+  $("queue-label").textContent = !S.queue.length ? "Review queue · nothing pending"
+    : idx >= 0 ? `Review queue · ${idx + 1} of ${S.queue.length}`
+    : `Review queue · ${S.queue.length} pending`;
+  $("q-prev").disabled = $("q-next").disabled = !S.queue.length;
   $("queue-list").innerHTML = S.queue.length
     ? S.queue.map((q) => `
       <li data-key="${esc(q.cluster_key)}" class="${q.cluster_key === cur ? "sel" : ""}">
@@ -589,16 +694,20 @@ async function refresh(fit) {
 }
 
 async function loadRun(runId) {
-  Object.assign(S, { run: runId, current: null, segment: null, benched: false });
+  // queue: [] so nothing from the previous run's queue shows while this one loads.
+  Object.assign(S, { run: runId, current: null, segment: null, benched: false, queue: [] });
   S.order.clear();
   resetEvidence();
+  renderQueue();
+  liveFeedReset();
   await refresh(true);
   renderBench();
   await loadPlan();
   renderPosition();
   renderTrack();
   logReset();
-  if (S.worklist.length) selectSegment(S.worklist[0].segment_id);
+  renderLiveFeed();
+  if (S.worklist.length) selectSegment(S.worklist[0].segment_id, false);
 }
 
 // ------------------------------------------------------------------ notifications
@@ -807,10 +916,11 @@ async function tick() {
     const newest = runs[0];
     if (newest && S.follow && newest.run_id !== S.run) {
       $("run-select").value = newest.run_id;
+      if (!newest.ended_at) showTab("live");        // a new run starts: watch it come in
       await loadRun(newest.run_id);
     } else if (S.run) {
       await refresh(false);
-      if (!S.current && S.segment == null && S.worklist.length) selectSegment(S.worklist[0].segment_id);
+      if (!S.current && S.segment == null && S.worklist.length) selectSegment(S.worklist[0].segment_id, false);
       if (!S.benched) renderBench();
       if (S.live) renderTrack();
     }
@@ -921,6 +1031,10 @@ async function boot() {
   setInterval(tick, LIVE_MS);
   setInterval(() => { if (S.live && !document.hidden) renderPosition(); }, CAR_MS);
   setInterval(() => { if (!$("log").hidden && !LOG.paused) logPoll(); }, 1000);
+  setInterval(() => {
+    const onTab = !document.querySelector('.tab-page[data-page="live"]').hidden;
+    if (onTab && !document.hidden && (S.live || LF.doneFor !== S.run)) renderLiveFeed();
+  }, LIVE_FEED_MS);
   $("new-run").onclick = () => {
     $("new-run-err").textContent = "";
     loadSources();                          // a video extracted since page load shows up

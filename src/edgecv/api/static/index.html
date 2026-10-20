@@ -84,13 +84,28 @@
     <section class="card evidence">
       <!-- Tabs: one job per page instead of everything stacked in one card. -->
       <nav class="tabs" aria-label="Panel">
-        <button class="tab active" data-tab="evidence">Evidence</button>
+        <button class="tab active" data-tab="live">Live Feed <span id="live-dot" class="live-dot" hidden></span></button>
+        <button class="tab" data-tab="evidence">Evidence</button>
         <button class="tab" data-tab="queue">Review queue <span id="queue-count" class="count">0</span></button>
         <button class="tab" data-tab="health">Run health</button>
       </nav>
 
-      <!-- Tab 1: Evidence -->
-      <div class="tab-page" data-page="evidence">
+      <!-- Tab 1: Live Feed — the newest frame to land, with the worker's boxes on it. -->
+      <div class="tab-page" data-page="live">
+        <div class="card-head">
+          <h2 id="lf-title">Live Feed</h2>
+          <span id="lf-state" class="chip muted-chip">—</span>
+        </div>
+        <div class="frame-wrap empty" id="lf-wrap">
+          <canvas id="lf-frame" width="960" height="400"></canvas>
+          <div class="hud"><span id="lf-hud-l"></span><span id="lf-hud-r"></span></div>
+        </div>
+        <p class="muted caption" id="lf-caption">Start a run to watch frames as the workers process them.</p>
+        <dl class="meta" id="lf-meta"></dl>
+      </div>
+
+      <!-- Tab 2: Evidence -->
+      <div class="tab-page" data-page="evidence" hidden>
         <div class="card-head">
           <h2 id="ev-title">Select a defect</h2>
           <span id="ev-state" class="chip muted-chip">—</span>
@@ -124,13 +139,13 @@
         </div>
       </div>
 
-      <!-- Tab 2: Review queue -->
+      <!-- Tab 3: Review queue -->
       <div class="tab-page" data-page="queue" hidden>
         <p class="muted pad">Defects the detector wasn't sure about, most confident first. Click one to review it.</p>
         <ul id="queue-list" class="queue-list"></ul>
       </div>
 
-      <!-- Tab 3: Run health -->
+      <!-- Tab 4: Run health -->
       <div class="tab-page" data-page="health" hidden>
         <dl class="meta" id="health"></dl>
         <details class="bench" id="bench-box" open>
