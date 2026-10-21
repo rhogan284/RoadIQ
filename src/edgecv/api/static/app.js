@@ -775,10 +775,12 @@ S.busy = false;
 
 function renderRunOptions(runs) {
   const sel = $("run-select");
-  const keep = sel.value;
-  sel.innerHTML = runs.map((r) => `<option value="${r.run_id}">${fmtDate(r.started_at,
+  // No run open (a fresh page with nothing live): a placeholder, so the menu doesn't
+  // claim the last run is on screen.
+  sel.innerHTML = (S.run ? "" : `<option value="" disabled>Pick a past run…</option>`) +
+    runs.map((r) => `<option value="${r.run_id}">${fmtDate(r.started_at,
     { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · ${esc(r.source_kind)} · ${r.run_id.slice(0, 8)}${r.ended_at ? "" : " · live"}</option>`).join("");
-  sel.value = keep || (runs[0] && runs[0].run_id);
+  sel.value = S.run || "";
 }
 
 // A "live" run that hasn't landed a new frame for STALL_MS is stalled: the feed died or was
@@ -914,7 +916,8 @@ async function tick() {
     if (NOTES.apiDown) { NOTES.apiDown = false; notify("info", "Connection to the system restored"); }
     renderRunOptions(runs);
     const newest = runs[0];
-    if (newest && S.follow && newest.run_id !== S.run) {
+    // From a blank page, only a live run is worth jumping to; a finished one waits to be picked.
+    if (newest && S.follow && newest.run_id !== S.run && (S.run || !newest.ended_at)) {
       $("run-select").value = newest.run_id;
       if (!newest.ended_at) showTab("live");        // a new run starts: watch it come in
       await loadRun(newest.run_id);
@@ -1025,7 +1028,7 @@ async function boot() {
   renderRunOptions(runs);
   sel.onchange = () => {
     // Picking anything but the newest run stops auto-follow; picking the newest resumes it.
-    S.follow = sel.value === sel.options[0].value;
+    S.follow = sel.value === sel.querySelector('option:not([value=""])').value;
     loadRun(sel.value);
   };
   setInterval(tick, LIVE_MS);
@@ -1066,9 +1069,17 @@ async function boot() {
   renderBus();
   const first = runs[0];
   if (!first) { $("ev-caption").textContent = "No survey runs yet — press ＋ New run."; return; }
-  sel.value = first.run_id;
-  await loadRun(first.run_id);
-  renderLive(first);
+  // A refresh starts clean: the last run's frame and figures stay off screen unless that
+  // run is still live. It is one click away in the Survey run menu.
+  if (first.ended_at) {
+    $("ev-caption").textContent = "No run live — press ＋ New run, or pick a past run.";
+    lfEmpty("No run live");
+    $("lf-caption").textContent = "Press ＋ New run to start one. Frames appear here as the workers finish them.";
+  } else {
+    sel.value = first.run_id;
+    await loadRun(first.run_id);
+    renderLive(first);
+  }
   renderRunner();
   if (location.hash === "#new") $("new-run").click();                      // deep link
   if (location.hash === "#log") { $("log").hidden = false; logPoll(); }   // deep link for demos
