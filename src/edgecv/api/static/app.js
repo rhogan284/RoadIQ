@@ -772,6 +772,7 @@ const LIVE_MS = 5000;
 const CAR_MS = 1000;
 S.follow = true;
 S.busy = false;
+S.bootAt = Date.now();
 
 function renderRunOptions(runs) {
   const sel = $("run-select");
@@ -916,8 +917,10 @@ async function tick() {
     if (NOTES.apiDown) { NOTES.apiDown = false; notify("info", "Connection to the system restored"); }
     renderRunOptions(runs);
     const newest = runs[0];
-    // From a blank page, only a live run is worth jumping to; a finished one waits to be picked.
-    if (newest && S.follow && newest.run_id !== S.run && (S.run || !newest.ended_at)) {
+    // From a blank page, jump only to a run that is new: live, or started since the page
+    // loaded (a short run can finish between two ticks). Older ones wait to be picked.
+    const fresh = newest && (!newest.ended_at || Date.parse(newest.started_at) >= S.bootAt);
+    if (newest && S.follow && newest.run_id !== S.run && (S.run || fresh)) {
       $("run-select").value = newest.run_id;
       if (!newest.ended_at) showTab("live");        // a new run starts: watch it come in
       await loadRun(newest.run_id);
