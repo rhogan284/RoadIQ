@@ -20,7 +20,7 @@ from typing import Literal
 
 import psycopg
 import redis
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -45,6 +45,16 @@ STATIC = Path(__file__).resolve().parent / "static"
 FRAME_ROOT = Path(os.environ.get("FRAME_ROOT", "data")).resolve()
 
 app = FastAPI(title="RoadIQ read API", version="0.1.0")
+
+
+@app.middleware("http")
+async def no_store(request: Request, call_next):
+    # Nothing the browser holds survives a refresh: run ids can be reused (`--run-id`) and
+    # the frame URL is only run + seq, so a cached image or JSON from the last run would
+    # otherwise show up against the new one. Covers /static too, so code changes land.
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def db() -> psycopg.Connection:
