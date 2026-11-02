@@ -269,7 +269,10 @@ def export_run(conn: psycopg.Connection, run_id: str, out: Path) -> dict:
         curves += [{"class": cls} | pt for pt in curve]
     _write_csv(out / "pr_curve.csv", curves)
 
-    matrix = confusion(preds, gt)
+    # `other` is never scored: its predictions are not stored for scoring
+    # (PREDICTIONS_SQL) and evaluate.py skips it, so its ground truth would only add
+    # misses that no prediction could ever claim.
+    matrix = confusion(preds, {k: v for k, v in gt.items() if k[1] != "other"})
     _write_csv(out / "confusion.csv",
                [{"gt_class": g, "pred_class": p, "count": n}
                 for (g, p), n in sorted(matrix.items())])

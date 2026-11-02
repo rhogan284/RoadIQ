@@ -174,7 +174,10 @@ def chart_latency_cdf(s: Sweep, out: Path):
     if not base:
         return print("  skip latency CDF: no baseline run")
     frames = read_csv(s.file(base["label"], "frames.csv"))
-    fig, axes = figure(s, "Most frames reach the database in under half a second",
+    e2e_all = [num(f["e2e_ms"]) for f in frames if num(f["e2e_ms"]) is not None]
+    p50, p95 = np.percentile(e2e_all, 50), np.percentile(e2e_all, 95)
+    fig, axes = figure(s, f"Half of all frames are in the database within {p50:,.0f} ms; "
+                          f"95% within {p95 / 1000:.1f} s",
                        f"Cumulative share of frames by latency · baseline run, "
                        f"{len(frames):,} frames, {base['workers']} workers, "
                        f"{num(base['offered_fps']):g} fps offered", height=3.7)
@@ -220,7 +223,9 @@ def chart_latency_stages(s: Sweep, out: Path):
         sel = [f for f, v in zip(frames, e2e) if a <= v <= b]
         rows.append((name, {k: float(np.median([num(f[k]) for f in sel]))
                             for k in ("queue_ms", "infer_ms", "write_ms")}, len(sel)))
-    fig, axes = figure(s, "Where a frame's time goes",
+    slow = rows[1][1]
+    fig, axes = figure(s, "Slow frames are slow because they wait in the queue"
+                       if slow["queue_ms"] > slow["infer_ms"] else "Where a frame's time goes",
                        "Median time in each stage, for frames grouped by end-to-end "
                        "latency · baseline run", height=3.3)
     ax = axes[0][0]
@@ -262,7 +267,10 @@ def chart_throughput(s: Sweep, out: Path):
     groups = _by_workers(rows)
     fps_max = max(num(r["offered_fps"]) for r in rows)
     buffer = rows[0]["buffer"]
-    fig, axes = figure(s, "Each worker adds about one ceiling's worth of frames",
+    ceil = {w: max(num(r["achieved_fps"]) for r in g) for w, g in groups.items()}
+    title = "Throughput ceiling: " + " · ".join(
+        f"{c:.1f} fps with {w} worker{'s' if w > 1 else ''}" for w, c in ceil.items())
+    fig, axes = figure(s, title,
                        f"Offered vs achieved rate, frames dropped, and p95 end-to-end "
                        f"latency · {rows[0]['frames_offered']} frames per point, "
                        f"buffer {buffer} frames", ncols=3, height=3.5)
@@ -280,8 +288,6 @@ def chart_throughput(s: Sweep, out: Path):
                 markeredgecolor=SURFACE, markeredgewidth=1.2)
         a3.plot(x, [num(r["e2e_p95_ms"]) / 1000 for r in g], "-o", color=c,
                 markeredgecolor=SURFACE, markeredgewidth=1.2)
-        a1.annotate(lab, (x[-1], num(g[-1]["achieved_fps"])), xytext=(4, 0),
-                    textcoords="offset points", fontsize=7.5, color=INK_2, va="center")
     a1.set_title("Achieved fps", fontsize=9)
     a2.set_title("Frames dropped (%)", fontsize=9)
     a3.set_title("p95 end to end (s, log)", fontsize=9)
@@ -289,7 +295,7 @@ def chart_throughput(s: Sweep, out: Path):
     for a in (a1, a2, a3):
         a.set_xlabel("Offered fps")
         a.set_xticks(sorted({num(r["offered_fps"]) for r in rows}))
-    a1.set_xlim(0, fps_max * 1.35)
+    a1.set_xlim(0, fps_max * 1.1)
     a1.set_ylim(0, fps_max * 1.05)
     a2.set_ylim(bottom=0)
     fig_legend(fig, *a1.get_legend_handles_labels())
@@ -303,7 +309,8 @@ def chart_coverage(s: Sweep, out: Path):
     if not rows:
         return print("  skip coverage: no runs")
     order = {"baseline": 0, "chaos": 1, "prevalence": 2, "throughput": 3}
-    rows.sort(key=lambda r: (order.get(r["grid"], 9), r["label"]))
+    rows.sort(key=lambda r: (order.get(r["grid"], 9), num(r["workers"]) or 0,
+                             num(r["prevalence"]) or 0, num(r["offered_fps"]) or 0))
     fig, axes = figure(s, "Every frame is accounted for: landed or counted as dropped",
                        "Share of offered frames, per run · a dropped frame is refused at "
                        "the buffer and reported as metres of road not assessed",
@@ -345,20 +352,29 @@ def chart_chaos(s: Sweep, out: Path):
     t = np.array([num(b["t"]) - t0 for b in bus])
     kill_t = pt["kill"]["t"] - t0
     pending = np.array([num(b["pending"]) or 0 for b in bus])
-    lag = np.array([num(b["lag"]) or 0 for b in bus])
+    backlog = np.array([num(b["stream_len"]) or 0 for b in bus])
+    lag_unknown = np.array([num(b["lag"]) is None for b in bus])
     landed = np.array([num(b["landed"]) for b in bus])
     offered = int(num(r["frames_offered"]))
     fps = num(r["offered_fps"])
-    fig, axes = figure(s, "Killing a worker mid-run loses no frames",
+    published_n = offered - int(num(r["frames_dropped"]))
+    fig, axes = figure(s, f"One of two workers killed mid-run: {int(landed[-1]):,} of "
+                          f"{published_n:,} frames still landed",
                        f"worker-1 SIGKILLed {kill_t:.0f} s into a {offered:,}-frame run "
-                       f"(2 workers, {fps:g} fps). Its claimed frames sit pending until "
-                       f"the survivor reclaims them with XAUTOCLAIM.",
+                       f"(2 workers, {fps:g} fps). The survivor carries the load, the "
+                       f"backlog grows, and the dead worker's claimed frames stay pending "
+                       f"until the survivor reclaims them with XAUTOCLAIM.",
                        nrows=2, height=4.6, sharex=True)
     a1, a2 = axes[0][0], axes[1][0]
-    a1.plot(t, pending, color=SERIES[0], label="Pending (claimed, not acked)")
-    a1.plot(t, lag, color=SERIES[1], label="Lag (not yet delivered)")
+    a1.plot(t, backlog, color=SERIES[0], label="Backlog on the stream (XLEN)")
+    a1.plot(t, pending, color=SERIES[1], linewidth=1.0,
+            label="Pending (claimed, not acked)")
+    if lag_unknown.any():
+        a1.fill_between(t, 0, 1, where=lag_unknown, transform=a1.get_xaxis_transform(),
+                        color=GRID, alpha=0.45, linewidth=0, zorder=0,
+                        label="Redis reports lag as unknown")
     a1.set_ylabel("Frames on the bus")
-    a1.legend(loc="upper right")
+    a1.legend(loc="upper left", fontsize=7.5)
     published = np.minimum(np.clip(t, 0, None) * fps, offered)
     a2.plot(t, published, color=AXIS, linewidth=1.2, label="Published by feed-sim")
     a2.plot(t, landed, color=SERIES[0], label="Landed in Postgres")
@@ -367,15 +383,15 @@ def chart_chaos(s: Sweep, out: Path):
     a2.legend(loc="lower right")
     for a in (a1, a2):
         a.axvline(kill_t, color=CRITICAL, linewidth=1)
-    a1.annotate("worker-1 killed", (kill_t, a1.get_ylim()[1] * 0.92), xytext=(4, 0),
+    a2.annotate("worker-1 killed", (kill_t, a2.get_ylim()[1] * 0.85), xytext=(4, 0),
                 textcoords="offset points", fontsize=7.5, color=CRITICAL)
     # The reclaim: the first moment after the kill that pending drops back to zero.
     after = np.where((t > kill_t) & (pending == 0))[0]
     peak_i = int(np.argmax(np.where(t > kill_t, pending, -1)))
     if after.size and pending[peak_i] > 0:
         rec_i = after[after > peak_i][0] if (after > peak_i).any() else after[-1]
-        a1.annotate(f"reclaimed · pending back to 0 at {t[rec_i]:.0f} s",
-                    (t[rec_i], 0), xytext=(6, 18), textcoords="offset points",
+        a1.annotate(f"drained · pending back to 0 at {t[rec_i]:.0f} s",
+                    (t[rec_i], 0), xytext=(6, 30), textcoords="offset points",
                     fontsize=7.5, color=INK_2,
                     arrowprops={"arrowstyle": "-", "color": MUTED, "linewidth": 0.6})
     a2.plot([t[-1]], [landed[-1]], "o", color=SERIES[0], markeredgecolor=SURFACE,
@@ -397,7 +413,8 @@ def chart_storage(s: Sweep, out: Path):
     raw = [sums[r["label"]]["bytes"]["raw_per_km"] / 1e6 for r in rows]
     stored = [num(r["bytes_stored"]) / 1e6 / num(r["assessed_km"]) for r in rows]
     red = [num(r["reduction_x"]) for r in rows]
-    fig, axes = figure(s, "Storage savings shrink as the road gets worse",
+    fig, axes = figure(s, f"Storage reduction falls from {red[0]:.1f}× to {red[-1]:.1f}× "
+                          f"as the share of damaged frames rises",
                        "Bytes kept per km of road, by share of frames with damage · "
                        "raw = every JPEG offered; stored = crops + thumbnails only",
                        ncols=2, height=3.5)
@@ -537,13 +554,18 @@ def chart_confusion(s: Sweep, out: Path):
 # --- B3/B4: resources ------------------------------------------------------------------
 
 def _resource_series(samples: list[dict], t0: float):
+    """Per service group, per second: each container's readings in that second are
+    averaged first (docker stats refreshes ~twice a second), then summed across
+    containers — the same rule as edgecv.bench.resources.summarise."""
+    per = defaultdict(list)
+    for sm in samples:
+        per[(service_group(sm["service"]), sm["container"],
+             int(num(sm["t"]) - t0))].append(sm)
     cpu = defaultdict(lambda: defaultdict(float))
     mem = defaultdict(lambda: defaultdict(float))
-    for sm in samples:
-        g = service_group(sm["service"])
-        sec = int(num(sm["t"]) - t0)
-        cpu[g][sec] += num(sm["cpu_pct"])
-        mem[g][sec] += num(sm["mem_mb"])
+    for (g, _c, sec), group in per.items():
+        cpu[g][sec] += sum(num(x["cpu_pct"]) for x in group) / len(group)
+        mem[g][sec] += sum(num(x["mem_mb"]) for x in group) / len(group)
     return cpu, mem
 
 
@@ -628,9 +650,16 @@ def chart_cpu_vs_rate(s: Sweep, out: Path):
     if not rows:
         return print("  skip CPU vs rate: no throughput grid")
     groups = _by_workers(rows)
-    fig, axes = figure(s, "Worker CPU rises with load until the workers saturate",
+    cost = {w: np.mean([(num(r["worker_cpu_mean_pct"]) / 100) / num(r["achieved_fps"])
+                        for r in g if num(r["offered_fps"]) >= 8]) for w, g in groups.items()}
+    ws = sorted(cost)
+    title = (f"More workers cost more CPU per frame: {cost[ws[0]]:.2f} core-s with "
+             f"{ws[0]}, {cost[ws[-1]]:.2f} with {ws[-1]}" if len(ws) > 1
+             else "Worker CPU by offered rate")
+    fig, axes = figure(s, title,
                        "Mean worker CPU while each run was live, and CPU-seconds spent per "
-                       "frame processed · throughput grid", ncols=2, height=3.4)
+                       "frame processed · throughput grid · title averages the points at "
+                       "8 fps and above", ncols=2, height=3.4)
     a1, a2 = axes[0]
     for w, g in groups.items():
         c = WORKER_COLOR.get(w, SERIES[w % len(SERIES)])
@@ -645,7 +674,7 @@ def chart_cpu_vs_rate(s: Sweep, out: Path):
     for a in (a1, a2):
         a.set_xlabel("Offered fps")
         a.set_xticks(sorted({num(r["offered_fps"]) for r in rows}))
-    a1.set_ylabel("Worker CPU, all replicas (% of one core)")
+    a1.set_ylabel("Worker CPU (% of one core)")
     a2.set_ylabel("Core-seconds per frame")
     a1.set_ylim(bottom=0)
     a2.set_ylim(bottom=0)

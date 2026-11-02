@@ -113,3 +113,19 @@ class TestDockerStats:
         assert out["worker"]["net_rx_b"] == 1500
         assert out["worker"]["replicas"] == 2
         assert out["pipeline"]["cpu_peak_pct"] == 430
+
+    def test_two_samples_per_second_are_averaged_not_summed(self):
+        # docker stats refreshes about twice a second; summing both readings of one
+        # container in a second doubled every CPU and memory total (found 2026-11-02:
+        # 1,825 % on a 15-core VM).
+        def s(t, cpu, mem):
+            return {"t": t, "container": "w1", "service": "worker", "replica": "1",
+                    "cpu_pct": cpu, "mem_mb": mem, "net_rx_b": 0, "net_tx_b": 0,
+                    "blk_r_b": 0, "blk_w_b": 0}
+        out = summarise([s(1.1, 400, 600), s(1.6, 500, 700),
+                         s(2.1, 300, 650), s(2.6, 300, 650)])
+        assert out["worker"]["cpu_mean_pct"] == 375        # (450 + 300) / 2
+        assert out["worker"]["cpu_peak_pct"] == 450
+        assert out["worker"]["mem_total_peak_mb"] == 650
+        assert out["worker"]["mem_peak_mb"] == 700         # raw single-sample peak
+        assert out["pipeline"]["cpu_peak_pct"] == 450

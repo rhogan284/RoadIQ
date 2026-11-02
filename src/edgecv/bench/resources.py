@@ -94,20 +94,24 @@ def summarise(samples: list[dict], *, t0: float | None = None,
               if (t0 is None or s["t"] >= t0) and (t1 is None or s["t"] <= t1)]
     if not window:
         return {}
-    # docker stats emits one sample per container per refresh; bucket to the second
-    # so the replicas of a service are summed at a common time.
-    cpu_at: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
-    mem_at: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    # Bucket to the second so the replicas of a service are summed at a common time.
+    # docker stats refreshes about twice a second, so a container can have several
+    # readings in one bucket: AVERAGE those first, then sum across containers.
+    # Summing them directly doubled every total (2026-11-02 sweep, fixed here).
+    per_container: dict[tuple, list] = defaultdict(list)
     peak_mem: dict[str, float] = defaultdict(float)
     first: dict[str, dict] = {}
     last: dict[str, dict] = {}
     for s in window:
-        sec = int(s["t"])
-        cpu_at[s["service"]][sec] += s["cpu_pct"]
-        mem_at[s["service"]][sec] += s["mem_mb"]
+        per_container[(s["service"], s["container"], int(s["t"]))].append(s)
         peak_mem[s["service"]] = max(peak_mem[s["service"]], s["mem_mb"])
         first.setdefault(s["container"], s)
         last[s["container"]] = s
+    cpu_at: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    mem_at: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for (svc, _c, sec), group in per_container.items():
+        cpu_at[svc][sec] += sum(g["cpu_pct"] for g in group) / len(group)
+        mem_at[svc][sec] += sum(g["mem_mb"] for g in group) / len(group)
 
     out: dict = {}
     for svc in cpu_at:

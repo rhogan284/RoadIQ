@@ -1,6 +1,7 @@
 """Benchmark sweep: latency, throughput ceiling, resource use, storage vs prevalence, chaos.
 
     make bench                       # = all four grids below, into bench-out/<date>/
+    uv run python -m scripts.sweep --resummarise bench-out/x   # recompute resources only
     uv run python -m scripts.sweep baseline throughput prevalence chaos --out bench-out/x
 
 Each grid point is one survey run through the real Compose stack:
@@ -365,7 +366,45 @@ def hardware() -> dict:
             "compose_project": PROJECT}
 
 
+def resummarise(out: Path, settings: Settings) -> None:
+    """Recompute every run's resource figures from its saved resources.csv — no
+    re-run. Rewrites point.json `resources`, the resource columns of runs.csv, and
+    the run's bench_runs row (cpu_pct, peak_rss_mb, grid_point.resources)."""
+    index = out / "runs.csv"
+    rows = list(csv.DictReader(index.open()))
+    with psycopg.connect(settings.pg_dsn, autocommit=True) as conn:
+        for row in rows:
+            d = out / row["label"]
+            pt = json.loads((d / "point.json").read_text())
+            with (d / "resources.csv").open() as fh:
+                samples = [{k: (v if k in ("container", "service", "replica")
+                                else float(v)) for k, v in r.items()}
+                           for r in csv.DictReader(fh)]
+            res = summarise(samples, t0=pt["t_feed_start"], t1=pt["t_drained"])
+            pt["resources"] = res
+            (d / "point.json").write_text(json.dumps(pt, indent=2))
+            worker, pipe = res.get("worker", {}), res.get("pipeline", {})
+            row["pipeline_cpu_mean_pct"] = pipe.get("cpu_mean_pct")
+            row["worker_cpu_mean_pct"] = worker.get("cpu_mean_pct")
+            row["worker_mem_peak_mb"] = worker.get("mem_peak_mb")
+            row["pipeline_mem_peak_mb"] = pipe.get("mem_total_peak_mb")
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE bench_runs b SET cpu_pct = %s, peak_rss_mb = %s, "
+                    "grid_point = b.grid_point || jsonb_build_object('resources', %s::jsonb) "
+                    "FROM survey_runs r WHERE r.bench_run_id = b.bench_run_id "
+                    "AND r.run_id = %s",
+                    (pipe.get("cpu_mean_pct"), worker.get("mem_peak_mb"),
+                     json.dumps(res), row["run_id"]))
+            print(f"  {row['label']}: worker CPU {worker.get('cpu_mean_pct')}% · "
+                  f"pipeline {pipe.get('cpu_mean_pct')}% · "
+                  f"pipeline mem {pipe.get('mem_total_peak_mb')} MB")
+    _write_rows(index, rows)
+
+
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--resummarise":
+        return resummarise(Path(sys.argv[2]), Settings.from_env())
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("grids", nargs="+",
                     choices=["baseline", "throughput", "prevalence", "chaos"])
