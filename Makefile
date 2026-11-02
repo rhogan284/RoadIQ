@@ -1,4 +1,4 @@
-.PHONY: install up down migrate test weights dataset stack e2e evaluate video
+.PHONY: install up down migrate test weights dataset stack e2e evaluate video bench charts test-unit
 
 # Editable-install .pth files can end up ignored by site.py (e.g. macOS marks
 # them UF_HIDDEN, or the working directory just isn't on sys.path). Setting
@@ -57,3 +57,21 @@ VIDEO_DIR = data/video/$(basename $(notdir $(VIDEO)))
 video: stack
 	uv run python -m scripts.extract_video "$(VIDEO)" --fps $(FPS) --out $(VIDEO_DIR)
 	uv run python -m scripts.e2e --fps $(FPS) --manifest $(VIDEO_DIR)/manifest.json --no-bench
+
+# --- Benchmarking (C4 §3.4; scripts/sweep.py, scripts/charts.py) ---------------------
+# Its own Compose project (roadiq-bench), so the sweep never touches the demo stack's
+# database. It publishes the same ports, so stop the demo stack first (`make down`).
+# Grids: baseline (whole split), throughput (workers x fps), prevalence, chaos. ~1 h.
+BENCH_OUT ?= bench-out/$(shell date +%Y-%m-%d)
+GRIDS ?= baseline throughput prevalence chaos
+bench:
+	COMPOSE_PROJECT_NAME=roadiq-bench docker compose build writer
+	COMPOSE_PROJECT_NAME=roadiq-bench uv run python -m scripts.sweep $(GRIDS) --out $(BENCH_OUT)
+
+# PNG charts + a markdown results table from a sweep's files. No database needed.
+charts:
+	uv run --with matplotlib python -m scripts.charts $(BENCH_OUT)
+
+# The tests that need no services (tests/unit/).
+test-unit:
+	uv run pytest -q tests/unit

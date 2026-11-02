@@ -9,3 +9,6 @@ blobs/
 .DS_Store
 .idea/
 /weights
+
+# benchmark sweep output (scripts/sweep.py) — copied into the report, not committed
+bench-out/

@@ -1,0 +1,21 @@
+-- C4 §3.4 benchmarking: when did the writer land each result?
+--
+-- The latency chain had three of its four timestamps already:
+--   frames.captured_at     feed-sim built the frame
+--   frames.enqueued_at     feed-sim put it on the bus
+--   inferences.started_at  a worker began on it (+ latency_ms for the inference)
+-- The fourth — the frame becoming visible in Postgres — was missing, so end-to-end
+-- latency (capture → queryable) could not be measured, only inference time.
+--
+-- Two statements, on purpose. `ADD COLUMN ... DEFAULT clock_timestamp()` in one
+-- statement would evaluate the volatile default for every EXISTING row during the
+-- table rewrite and stamp them all with the migration's own time — a fake write
+-- time that would read as a huge, wrong latency on every earlier run. Added bare,
+-- old rows stay NULL (unknown), and only rows written from now on get a value.
+--
+-- clock_timestamp(), not now(): the writer inserts a batch of up to 100 results in
+-- one transaction, and now() is fixed at transaction start, which would hide the
+-- time spent inside the batch. The repository does not name this column in its
+-- INSERT, so the default applies without any writer change.
+ALTER TABLE inferences ADD COLUMN IF NOT EXISTS written_at timestamptz;
+ALTER TABLE inferences ALTER COLUMN written_at SET DEFAULT clock_timestamp();
